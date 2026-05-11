@@ -7,6 +7,7 @@ moc_*.o
 ui_*.h
 moc_predefs.h
 QtDashboard
+install.sh
 
 # Qt
 .qmake.stash

@@ -8,6 +8,7 @@
 #include <QFile>
 #include <QJsonDocument>
 #include <QJsonObject>
+#include <QJsonArray>
 #include <QStandardPaths>
 #include <QDir>
 
@@ -41,6 +42,10 @@ void UserConfig::load()
     m_callsign   = obj.value("callsign").toString();
     m_gridSquare = obj.value("grid").toString();
     m_language   = obj.value("language").toString("en");
+
+    m_recentModes.clear();
+    for (const QJsonValue &v : obj.value("recent_modes").toArray())
+        m_recentModes.append(v.toString());
 }
 
 void UserConfig::save()
@@ -81,12 +86,37 @@ void UserConfig::setTracking(bool enabled)
     save();
 }
 
+void UserConfig::addToRecent(const QString &modeId)
+{
+    m_recentModes.removeAll(modeId);
+    m_recentModes.prepend(modeId);
+    while (m_recentModes.size() > 3)
+        m_recentModes.removeLast();
+
+    QFile f(m_path);
+    if (!f.open(QIODevice::ReadOnly)) return;
+    QJsonDocument doc = QJsonDocument::fromJson(f.readAll());
+    f.close();
+
+    QJsonObject obj = doc.isObject() ? doc.object() : QJsonObject();
+    QJsonArray arr;
+    for (const QString &id : m_recentModes) arr.append(id);
+    obj["recent_modes"] = arr;
+
+    QFile fw(m_path);
+    if (!fw.open(QIODevice::WriteOnly)) return;
+    fw.write(QJsonDocument(obj).toJson(QJsonDocument::Indented));
+    fw.close();
+}
+
 void UserConfig::onFileChanged(const QString &path)
 {
     Q_UNUSED(path)
+    bool prevTouch = m_touchMode;
     load();
     // Re-add path — some editors replace the file (inotify loses track)
     m_watcher.addPath(m_path);
     emit configChanged();
-    emit touchModeChanged(m_touchMode);
+    if (m_touchMode != prevTouch)
+        emit touchModeChanged(m_touchMode);
 }

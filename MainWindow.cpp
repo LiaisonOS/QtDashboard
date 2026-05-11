@@ -83,7 +83,7 @@ void MainWindow::applyStyleSheet()
         "QPushButton {"
         "  background-color: #2d2d2d; color: #e0e0e0;"
         "  border: 1px solid #404040; border-radius: 4px;"
-        "  padding: 6px 10px; font-size: 12px; text-align: left;"
+        "  padding: 9px 14px; font-size: 15px; text-align: left;"
         "}"
         "QPushButton:hover   { background-color: #3d3d3d; }"
         "QPushButton:pressed { background-color: #484848; }"
@@ -96,7 +96,7 @@ void MainWindow::applyStyleSheet()
         "QPushButton#stopBtn {"
         "  background-color: #7a1a1a; color: #ffffff;"
         "  border: 1px solid #cc0000; border-radius: 4px;"
-        "  padding: 5px 10px; text-align: center;"
+        "  padding: 7px 14px; text-align: center;"
         "}"
         "QPushButton#stopBtn:hover   { background-color: #8a2020; }"
         "QPushButton#stopBtn:pressed { background-color: #aa2020; }"
@@ -104,7 +104,7 @@ void MainWindow::applyStyleSheet()
         "QPushButton#utilBtn {"
         "  background-color: #252525; color: #9e9e9e;"
         "  border: 1px solid #404040; border-radius: 4px;"
-        "  padding: 3px 8px; font-size: 11px; text-align: center;"
+        "  padding: 5px 11px; font-size: 14px; text-align: center;"
         "}"
         "QPushButton#utilBtn:hover   { background-color: #333333; color: #e0e0e0; }"
         "QPushButton#utilBtn:checked { background-color: #2E7D32; color: #ffffff; border: 1px solid #4ade80; }"
@@ -112,8 +112,8 @@ void MainWindow::applyStyleSheet()
         "QPushButton#sectionHeader {"
         "  background-color: #252525; color: #b0b0b0;"
         "  border: none; border-bottom: 1px solid #333333;"
-        "  border-radius: 0px; padding: 5px 8px;"
-        "  font-size: 11px; font-weight: bold; text-align: left;"
+        "  border-radius: 0px; padding: 7px 10px;"
+        "  font-size: 14px; font-weight: bold; text-align: left;"
         "}"
         "QPushButton#sectionHeader:hover { background-color: #2d2d2d; }"
 
@@ -122,18 +122,18 @@ void MainWindow::applyStyleSheet()
         "QPushButton#modemBtn {"
         "  background-color: #1a1a1a; color: #9e9e9e;"
         "  border: 1px solid #353535; border-radius: 4px;"
-        "  padding: 4px 6px; font-size: 11px; text-align: center;"
+        "  padding: 6px 9px; font-size: 14px; text-align: center;"
         "}"
         "QPushButton#modemBtn:hover   { background-color: #2d2d2d; color: #e0e0e0; }"
         "QPushButton#modemBtn:pressed { background-color: #1a3a1a; color: #4ade80; }"
 
-        "QLabel#clockLabel      { font-size: 13px; font-weight: bold; color: #ffa500; font-family: monospace; }"
-        "QLabel#sectionTitle    { font-size: 10px; font-weight: bold; color: #888888; }"
-        "QLabel#infoLabel       { font-size: 11px; color: #9e9e9e; }"
-        "QLabel#callsignLabel   { font-size: 14px; font-weight: bold; color: #ffa500; }"
-        "QLabel#gridLabel       { font-size: 12px; color: #9e9e9e; }"
-        "QLabel#activeModeLabel { font-size: 12px; color: #4ade80; }"
-        "QLabel#gpsLabel        { font-size: 11px; }"
+        "QLabel#clockLabel      { font-size: 17px; font-weight: bold; color: #ffa500; font-family: monospace; }"
+        "QLabel#sectionTitle    { font-size: 13px; font-weight: bold; color: #888888; }"
+        "QLabel#infoLabel       { font-size: 14px; color: #9e9e9e; }"
+        "QLabel#callsignLabel   { font-size: 18px; font-weight: bold; color: #ffa500; }"
+        "QLabel#gridLabel       { font-size: 15px; color: #9e9e9e; }"
+        "QLabel#activeModeLabel { font-size: 15px; color: #4ade80; }"
+        "QLabel#gpsLabel        { font-size: 14px; }"
 
         "QScrollArea { border: none; }"
         "QScrollBar:vertical { width: 4px; background: #1a1a1a; }"
@@ -197,8 +197,8 @@ void MainWindow::buildDesktopUI()
 
     QWidget *central = centralWidget();
     QVBoxLayout *main = new QVBoxLayout(central);
-    main->setContentsMargins(6, 6, 6, 6);
-    main->setSpacing(4);
+    main->setContentsMargins(8, 8, 8, 8);
+    main->setSpacing(6);
 
     // -----------------------------------------------------------------------
     // TOP 1 — UTC clock | Sync | Track | GPS status | Touch toggle
@@ -259,6 +259,7 @@ void MainWindow::buildDesktopUI()
         QHBoxLayout *hdr = new QHBoxLayout();
         QLabel *title = new QLabel("OPERATOR", section);
         title->setObjectName("sectionTitle");
+        title->setStyleSheet("color: #ffffff; font-size: 13px; font-weight: bold;");
         QLabel *arrow = new QLabel("  ✎", section);
         arrow->setObjectName("sectionTitle");
         hdr->addWidget(title);
@@ -351,6 +352,7 @@ void MainWindow::buildDesktopUI()
         QHBoxLayout *hdr = new QHBoxLayout();
         QLabel *title = new QLabel("INTERFACES", section);
         title->setObjectName("sectionTitle");
+        title->setStyleSheet("color: #ffffff; font-size: 13px; font-weight: bold;");
         QLabel *arrow = new QLabel("  ✎", section);
         arrow->setObjectName("sectionTitle");
         hdr->addWidget(title);
@@ -473,8 +475,8 @@ void MainWindow::buildDesktopUI()
         QWidget *content = new QWidget(sc);
         content->setVisible(expanded);
         QVBoxLayout *cl = new QVBoxLayout(content);
-        cl->setContentsMargins(6, 4, 4, 6);
-        cl->setSpacing(3);
+        cl->setContentsMargins(6, 6, 6, 8);
+        cl->setSpacing(5);
 
         if (expanded) {
             accordion->first  = hdr;
@@ -586,9 +588,39 @@ void MainWindow::buildDesktopUI()
         cl->addWidget(modemWidget);
     };
 
+    // --- RECENT MODES ---
+    {
+        QStringList recents = m_userConfig->recentModes();
+        if (!recents.isEmpty()) {
+            QLabel *recentTitle = new QLabel((m_language == "fr" ? "⭐ RÉCENTS" : "⭐ RECENT"), sc);
+            recentTitle->setObjectName("sectionTitle");
+            recentTitle->setContentsMargins(8, 6, 0, 2);
+            sl->addWidget(recentTitle);
+
+            QWidget *recentBox = new QWidget(sc);
+            QVBoxLayout *rl = new QVBoxLayout(recentBox);
+            rl->setContentsMargins(6, 6, 6, 8);
+            rl->setSpacing(5);
+
+            for (const QString &rid : recents) {
+                QString rname = m_modeLoader->nameForId(rid, m_language);
+                if (rname.isEmpty()) continue;
+                QPushButton *rbtn = new QPushButton(rname, recentBox);
+                rbtn->setProperty("active", m_activeMode == rid);
+                m_modeButtons[rid] = rbtn;
+                connect(rbtn, &QPushButton::clicked, this, [this, rid]() {
+                    onModeButtonClicked(rid);
+                });
+                rl->addWidget(rbtn);
+            }
+            sl->addWidget(recentBox);
+            sl->addWidget(makeSep(sc));
+        }
+    }
+
     // --- MESSAGING ---
     {
-        QVBoxLayout *cl = addSection("MESSAGING", true);
+        QVBoxLayout *cl = addSection("MESSAGING");
         addMultiMode(cl, "Winlink", {
             {"winlink-vara-hf", "VARA HF"},
             {"winlink-ardop",   "ARDOP"},
@@ -630,6 +662,7 @@ void MainWindow::buildDesktopUI()
         addParamMode(cl, "bbs-server", "LinBPQ", {
             {"vara-hf", "VARA HF"},
             {"vara-fm", "VARA FM"},
+            {"mercury", "Mercury"},
             {"300",     "HF 300"},
             {"1200",    "Pkt 1200"},
             {"9600",    "Pkt 9600"},
@@ -651,10 +684,31 @@ void MainWindow::buildDesktopUI()
     scroll->setWidget(sc);
     main->addWidget(scroll, 1);
 
+    // Version label at bottom
+    {
+        QString ver;
+        QFile mf("/opt/emcomm-tools/manifest.json");
+        if (mf.open(QFile::ReadOnly)) {
+            QJsonDocument doc = QJsonDocument::fromJson(mf.readAll());
+            ver = doc.object().value("version").toString();
+        }
+        if (ver.isEmpty()) {
+            QFile vf("/opt/emcomm-tools/version.txt");
+            if (vf.open(QFile::ReadOnly))
+                ver = QString::fromUtf8(vf.readAll()).trimmed();
+        }
+        if (!ver.isEmpty()) {
+            QLabel *verLabel = new QLabel("LiaisonOS v" + ver, central);
+            verLabel->setAlignment(Qt::AlignCenter);
+            verLabel->setStyleSheet("color: #555555; font-size: 11px; padding: 4px 0;");
+            main->addWidget(verLabel);
+        }
+    }
+
     // Snap to right edge, full available height (respects panel)
     QRect geo = QApplication::primaryScreen()->availableGeometry();
-    setFixedSize(320, geo.height());
-    move(geo.right() - 320 + 1, geo.top());
+    setFixedSize(380, geo.height());
+    move(geo.right() - 380 + 1, geo.top());
     show();
 }
 
@@ -900,7 +954,7 @@ void MainWindow::buildTouchUI()
 
         QHBoxLayout *opHdr = new QHBoxLayout();
         QLabel *opTitle = new QLabel("OPERATOR", opSection);
-        opTitle->setStyleSheet("color: #cccccc; font-size: 14px; font-weight: bold;");
+        opTitle->setStyleSheet("color: #ffffff; font-size: 14px; font-weight: bold;");
         QLabel *opPen = new QLabel("✎", opSection);
         opPen->setStyleSheet("color: #666; font-size: 16px;");
         opHdr->addWidget(opTitle);
@@ -935,7 +989,7 @@ void MainWindow::buildTouchUI()
 
         QHBoxLayout *ifHdr = new QHBoxLayout();
         QLabel *ifTitle = new QLabel("INTERFACES", ifSection);
-        ifTitle->setStyleSheet("color: #cccccc; font-size: 14px; font-weight: bold;");
+        ifTitle->setStyleSheet("color: #ffffff; font-size: 14px; font-weight: bold;");
         QLabel *ifPen = new QLabel("✎", ifSection);
         ifPen->setStyleSheet("color: #666; font-size: 16px;");
         ifHdr->addWidget(ifTitle);
@@ -1167,7 +1221,7 @@ void MainWindow::buildTouchUI()
                 QLayoutItem *it; while ((it=phl0->takeAt(0))) { if(it->widget()) it->widget()->deleteLater(); delete it; }
                 pw0->setVisible(!open);
                 if (!open) {
-                    const QList<QPair<QString,QString>> ml = {{"vara-hf","VARA HF"},{"vara-fm","VARA FM"},{"300","300"},{"1200","1200"},{"9600","9600"}};
+                    const QList<QPair<QString,QString>> ml = {{"vara-hf","VARA HF"},{"vara-fm","VARA FM"},{"mercury","Mercury"},{"300","300"},{"1200","1200"},{"9600","9600"}};
                     for (const auto &m : ml) {
                         QPushButton *mb = new QPushButton(m.second, pw0);
                         mb->setMinimumHeight(68); mb->setStyleSheet(modemBtnSS);
@@ -1383,6 +1437,7 @@ void MainWindow::onToggleTouchMode()
 
 void MainWindow::onModeButtonClicked(const QString &modeId)
 {
+    m_userConfig->addToRecent(modeId);
     m_supervisor->startMode(modeId);
     setActiveMode(modeId, m_modeLoader->nameForId(modeId, m_language));
     fastPoll();
@@ -1415,8 +1470,18 @@ void MainWindow::onStopClicked()
 
 void MainWindow::onStatusReceived(const QJsonObject &status)
 {
-    if (status.value("status").toString() != "ok")
+    QString st = status.value("status").toString();
+    if (st != "ok") {
+        QString msg = status.value("message").toString();
+        if (msg.isEmpty())
+            msg = (m_language == "fr") ? "et-supervisor n'est pas en cours."
+                                       : "et-supervisor is not running.";
+        QString title = (m_language == "fr") ? "Erreur du superviseur"
+                                             : "Supervisor Error";
+        setActiveMode(QString());
+        QMessageBox::critical(this, title, msg);
         return;
+    }
 
     QString mode     = status.value("mode").toString();
     QString modeName = status.value("mode_name").toString();

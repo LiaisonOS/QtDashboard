@@ -11,6 +11,7 @@
 #include <QObject>
 #include <QFileSystemWatcher>
 #include <QString>
+#include <QStringList>
 
 class UserConfig : public QObject
 {
@@ -19,14 +20,16 @@ class UserConfig : public QObject
 public:
     explicit UserConfig(QObject *parent = nullptr);
 
-    bool    touchMode()  const { return m_touchMode; }
-    bool    tracking()   const { return m_tracking; }
-    QString callsign()   const { return m_callsign; }
-    QString gridSquare() const { return m_gridSquare; }
-    QString language()   const { return m_language; }
+    bool        touchMode()   const { return m_touchMode; }
+    bool        tracking()    const { return m_tracking; }
+    QString     callsign()    const { return m_callsign; }
+    QString     gridSquare()  const { return m_gridSquare; }
+    QString     language()    const { return m_language; }
+    QStringList recentModes() const { return m_recentModes; }
 
     void setTouchMode(bool enabled);
     void setTracking(bool enabled);
+    void addToRecent(const QString &modeId);
 
 signals:
     void touchModeChanged(bool enabled);
@@ -42,9 +45,10 @@ private:
     QString m_path;
     QFileSystemWatcher m_watcher;
 
-    bool    m_touchMode  = false;
-    bool    m_tracking   = false;
-    QString m_callsign;
-    QString m_gridSquare;
-    QString m_language   = "en";
+    bool        m_touchMode   = false;
+    bool        m_tracking    = false;
+    QString     m_callsign;
+    QString     m_gridSquare;
+    QString     m_language    = "en";
+    QStringList m_recentModes;
 };
