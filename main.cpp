@@ -9,6 +9,10 @@
 #include "MainWindow.h"
 #include <QApplication>
 #include <QScreen>
+#include <QWindow>
+#include <QTimer>
+#include <X11/Xlib.h>
+#include <X11/Xatom.h>
 
 int main(int argc, char *argv[])
 {
@@ -18,6 +22,21 @@ int main(int argc, char *argv[])
 
     MainWindow w;
     w.show();
+
+    // Skip taskbar and pager — same as et-dashboard set_skip_taskbar_hint(True)
+    QTimer::singleShot(0, [&w]() {
+        Display *dpy = XOpenDisplay(nullptr);
+        if (!dpy) return;
+        Window xwin = w.winId();
+        Atom wmState       = XInternAtom(dpy, "_NET_WM_STATE", False);
+        Atom skipTaskbar   = XInternAtom(dpy, "_NET_WM_STATE_SKIP_TASKBAR", False);
+        Atom skipPager     = XInternAtom(dpy, "_NET_WM_STATE_SKIP_PAGER", False);
+        Atom atoms[2] = { skipTaskbar, skipPager };
+        XChangeProperty(dpy, xwin, wmState, XA_ATOM, 32, PropModeAppend,
+                        (unsigned char*)atoms, 2);
+        XFlush(dpy);
+        XCloseDisplay(dpy);
+    });
 
     return app.exec();
 }
