@@ -22,4 +22,4 @@ FORMS += \
     MainWindow.ui
 
 QMAKE_LFLAGS += -no-pie
-LIBS += -lX11
+LIBS += -lX11 -lxcb
