@@ -81,7 +81,7 @@ void MainWindow::applyStyleSheet()
         "QMainWindow, QWidget { background-color: #1a1a1a; color: #e0e0e0; }"
 
         "QPushButton {"
-        "  background-color: #2d2d2d; color: #e0e0e0;"
+        "  background-color: #1a1a1a; color: #ffffff;"
         "  border: 1px solid #404040; border-radius: 4px;"
         "  padding: 9px 14px; font-size: 15px; text-align: left;"
         "}"
@@ -127,7 +127,7 @@ void MainWindow::applyStyleSheet()
         "QPushButton#modemBtn:hover   { background-color: #2d2d2d; color: #e0e0e0; }"
         "QPushButton#modemBtn:pressed { background-color: #1a3a1a; color: #4ade80; }"
 
-        "QLabel#clockLabel      { font-size: 17px; font-weight: bold; color: #ffa500; font-family: monospace; }"
+        "QLabel#clockLabel      { font-size: 13px; font-weight: bold; color: #ffa500; font-family: monospace; }"
         "QLabel#sectionTitle    { font-size: 13px; font-weight: bold; color: #888888; }"
         "QLabel#infoLabel       { font-size: 14px; color: #9e9e9e; }"
         "QLabel#callsignLabel   { font-size: 18px; font-weight: bold; color: #ffa500; }"
@@ -192,7 +192,7 @@ void MainWindow::clearUI()
 void MainWindow::buildDesktopUI()
 {
     clearUI();
-    setWindowOpacity(0.92);
+    setWindowOpacity(1.0);
     setWindowFlags(Qt::Window | Qt::FramelessWindowHint);
 
     QWidget *central = centralWidget();
@@ -463,7 +463,7 @@ void MainWindow::buildDesktopUI()
     QWidget *sc = new QWidget();
     QVBoxLayout *sl = new QVBoxLayout(sc);
     sl->setContentsMargins(0, 0, 0, 0);
-    sl->setSpacing(0);
+    sl->setSpacing(4);
 
     // Accordion: track currently open {header, content}
     using AccordionPair = std::pair<QPushButton*, QWidget*>;
@@ -650,14 +650,14 @@ void MainWindow::buildDesktopUI()
             {"vara-hf", "VARA HF"},
             {"vara-fm", "VARA FM"},
             {"mercury", "Mercury"},
+            {"300",     "HF 300"},
             {"1200",    "Pkt 1200"},
             {"9600",    "Pkt 9600"},
-            {"300",     "HF 300"},
         });
         addParamMode(cl, "bbs-client-paracon", "Paracon", {
+            {"300",  "HF 300"},
             {"1200", "Pkt 1200"},
             {"9600", "Pkt 9600"},
-            {"300",  "HF 300"},
         });
         addParamMode(cl, "bbs-server", "LinBPQ", {
             {"vara-hf", "VARA HF"},
@@ -873,16 +873,25 @@ void MainWindow::buildTouchUI()
         return hl;
     };
 
-    // makePicker — creates a hidden picker widget below a row
-    auto makePicker = [](QVBoxLayout *sectionVL, QWidget *parent) -> std::pair<QWidget*, QHBoxLayout*> {
+    // makePicker — creates a hidden picker widget below a row (with mode label)
+    auto makePicker = [](QVBoxLayout *sectionVL, QWidget *parent) -> std::tuple<QWidget*, QLabel*, QHBoxLayout*> {
         QWidget *pw = new QWidget(parent);
         pw->setStyleSheet("background-color: #161f16; border-radius: 10px;");
-        QHBoxLayout *hl = new QHBoxLayout(pw);
-        hl->setContentsMargins(10, 8, 10, 8);
+        QVBoxLayout *vl = new QVBoxLayout(pw);
+        vl->setContentsMargins(10, 8, 10, 8);
+        vl->setSpacing(6);
+        QLabel *titleLbl = new QLabel(pw);
+        titleLbl->setAlignment(Qt::AlignCenter);
+        titleLbl->setStyleSheet("color: #aaffaa; font-size: 13px; font-weight: bold; background: transparent;");
+        vl->addWidget(titleLbl);
+        QWidget *btnRow = new QWidget(pw);
+        QHBoxLayout *hl = new QHBoxLayout(btnRow);
+        hl->setContentsMargins(0, 0, 0, 0);
         hl->setSpacing(8);
+        vl->addWidget(btnRow);
         pw->setVisible(false);
         sectionVL->addWidget(pw);
-        return {pw, hl};
+        return {pw, titleLbl, hl};
     };
 
     // addTouchSection — returns the content QVBoxLayout
@@ -1116,18 +1125,19 @@ void MainWindow::buildTouchUI()
 
         // Row 0 then picker below it
         QHBoxLayout *row0 = makeRow(cl, cw);
-        auto [pw0, phl0] = makePicker(cl, cw);
+        auto [pw0, lbl0, phl0] = makePicker(cl, cw);
 
         // Winlink (multi-modem)
         {
             QPushButton *btn = new QPushButton("Winlink", cw);
             btn->setMinimumHeight(80);
             btn->setStyleSheet(cardSS);
-            connect(btn, &QPushButton::clicked, this, [this, pw0, phl0, modemBtnSS]() {
+            connect(btn, &QPushButton::clicked, this, [this, pw0, lbl0, phl0, modemBtnSS]() {
                 bool open = pw0->isVisible();
                 QLayoutItem *it; while ((it=phl0->takeAt(0))) { if(it->widget()) it->widget()->deleteLater(); delete it; }
                 pw0->setVisible(!open);
                 if (!open) {
+                    lbl0->setText("— Winlink —");
                     const QList<QPair<QString,QString>> ml = {{"winlink-vara-hf","VARA HF"},{"winlink-vara-fm","VARA FM"},{"winlink-packet","Packet"},{"winlink-ardop","ARDOP"}};
                     for (const auto &m : ml) {
                         QPushButton *mb = new QPushButton(m.second, pw0);
@@ -1166,18 +1176,19 @@ void MainWindow::buildTouchUI()
         QVBoxLayout *cl = addTouchSection("BBS");
         QWidget *cw = qobject_cast<QWidget*>(cl->parent());
         QHBoxLayout *row0 = makeRow(cl, cw);
-        auto [pw0, phl0] = makePicker(cl, cw);
+        auto [pw0, lbl0, phl0] = makePicker(cl, cw);
 
         // QtTermTCP
         {
             QPushButton *btn = new QPushButton("QtTermTCP", cw);
             btn->setMinimumHeight(80); btn->setStyleSheet(cardSS);
-            connect(btn, &QPushButton::clicked, this, [this, pw0, phl0, modemBtnSS]() {
+            connect(btn, &QPushButton::clicked, this, [this, pw0, lbl0, phl0, modemBtnSS]() {
                 bool open = pw0->isVisible();
                 QLayoutItem *it; while ((it=phl0->takeAt(0))) { if(it->widget()) it->widget()->deleteLater(); delete it; }
                 pw0->setVisible(!open);
                 if (!open) {
-                    const QList<QPair<QString,QString>> ml = {{"vara-hf","VARA HF"},{"vara-fm","VARA FM"},{"mercury","Mercury"},{"1200","1200"},{"9600","9600"},{"300","300"}};
+                    lbl0->setText("— QtTermTCP —");
+                    const QList<QPair<QString,QString>> ml = {{"vara-hf","VARA HF"},{"vara-fm","VARA FM"},{"mercury","Mercury"},{"300","HF 300"},{"1200","Pkt 1200"},{"9600","Pkt 9600"}};
                     for (const auto &m : ml) {
                         QPushButton *mb = new QPushButton(m.second, pw0);
                         mb->setMinimumHeight(68); mb->setStyleSheet(modemBtnSS);
@@ -1194,12 +1205,13 @@ void MainWindow::buildTouchUI()
         {
             QPushButton *btn = new QPushButton("Paracon", cw);
             btn->setMinimumHeight(80); btn->setStyleSheet(cardSS);
-            connect(btn, &QPushButton::clicked, this, [this, pw0, phl0, modemBtnSS]() {
+            connect(btn, &QPushButton::clicked, this, [this, pw0, lbl0, phl0, modemBtnSS]() {
                 bool open = pw0->isVisible();
                 QLayoutItem *it; while ((it=phl0->takeAt(0))) { if(it->widget()) it->widget()->deleteLater(); delete it; }
                 pw0->setVisible(!open);
                 if (!open) {
-                    const QList<QPair<QString,QString>> ml = {{"1200","1200"},{"9600","9600"},{"300","300"}};
+                    lbl0->setText("— Paracon —");
+                    const QList<QPair<QString,QString>> ml = {{"300","HF 300"},{"1200","Pkt 1200"},{"9600","Pkt 9600"}};
                     for (const auto &m : ml) {
                         QPushButton *mb = new QPushButton(m.second, pw0);
                         mb->setMinimumHeight(68); mb->setStyleSheet(modemBtnSS);
@@ -1216,12 +1228,13 @@ void MainWindow::buildTouchUI()
         {
             QPushButton *btn = new QPushButton("LinBPQ", cw);
             btn->setMinimumHeight(80); btn->setStyleSheet(cardSS);
-            connect(btn, &QPushButton::clicked, this, [this, pw0, phl0, modemBtnSS]() {
+            connect(btn, &QPushButton::clicked, this, [this, pw0, lbl0, phl0, modemBtnSS]() {
                 bool open = pw0->isVisible();
                 QLayoutItem *it; while ((it=phl0->takeAt(0))) { if(it->widget()) it->widget()->deleteLater(); delete it; }
                 pw0->setVisible(!open);
                 if (!open) {
-                    const QList<QPair<QString,QString>> ml = {{"vara-hf","VARA HF"},{"vara-fm","VARA FM"},{"mercury","Mercury"},{"300","300"},{"1200","1200"},{"9600","9600"}};
+                    lbl0->setText("— LinBPQ —");
+                    const QList<QPair<QString,QString>> ml = {{"vara-hf","VARA HF"},{"vara-fm","VARA FM"},{"mercury","Mercury"},{"300","HF 300"},{"1200","Pkt 1200"},{"9600","Pkt 9600"}};
                     for (const auto &m : ml) {
                         QPushButton *mb = new QPushButton(m.second, pw0);
                         mb->setMinimumHeight(68); mb->setStyleSheet(modemBtnSS);
