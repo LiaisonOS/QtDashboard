@@ -495,7 +495,7 @@ void MainWindow::buildDesktopUI()
 
     QWidget *sc = new QWidget();
     QVBoxLayout *sl = new QVBoxLayout(sc);
-    sl->setContentsMargins(0, 0, 0, 0);
+    sl->setContentsMargins(0, 0, 0, 60);
     sl->setSpacing(4);
 
     // Accordion: track currently open {header, content}
