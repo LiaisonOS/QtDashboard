@@ -75,6 +75,10 @@ private:
 
 int main(int argc, char *argv[])
 {
+    // Disable XFCE/GNOME session management — prevents session manager from
+    // closing QtDashboard when other apps exit.
+    qunsetenv("SESSION_MANAGER");
+
     QApplication app(argc, argv);
     app.setApplicationName("QtDashboard");
     app.setOrganizationName("LiaisonOS");

@@ -13,6 +13,7 @@ BUILD_DIR="$SCRIPT_DIR/../QtDashboard-build"
 mkdir -p "$BUILD_DIR"
 cd "$BUILD_DIR"
 qmake "$SCRIPT_DIR/QtDashboard.pro"
+touch "$SCRIPT_DIR"/*.cpp "$SCRIPT_DIR"/*.h
 make -j$(nproc)
 
 echo "Binary: $BUILD_DIR/QtDashboard"

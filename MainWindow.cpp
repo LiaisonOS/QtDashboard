@@ -22,11 +22,15 @@
 #include <QProcess>
 #include <QFile>
 #include <QDir>
+#include <QDebug>
 #include <QFileInfo>
 #include <QMessageBox>
 #include <QScroller>
 
 #include <memory>
+#include <sys/socket.h>
+#include <sys/un.h>
+#include <unistd.h>
 
 MainWindow::MainWindow(QWidget *parent)
     : QMainWindow(parent)
@@ -48,6 +52,8 @@ MainWindow::MainWindow(QWidget *parent)
             this, &MainWindow::onTouchModeChanged);
     connect(m_userConfig, &UserConfig::configChanged,
             this, &MainWindow::refreshOperator);
+    connect(m_userConfig, &UserConfig::configChanged,
+            this, &MainWindow::refreshRecentModes);
     connect(m_supervisor, &SupervisorClient::statusReceived,
             this, &MainWindow::onStatusReceived);
     connect(m_statusTimer, &QTimer::timeout,
@@ -57,6 +63,25 @@ MainWindow::MainWindow(QWidget *parent)
 
     m_statusTimer->start(5000);
     startClockTimer();
+
+    // GPS notify socket — receives JSON/text from QtGpsSync via /tmp/et-gps-notify.sock
+    {
+        int fd = ::socket(AF_UNIX, SOCK_DGRAM, 0);
+        struct sockaddr_un addr;
+        memset(&addr, 0, sizeof(addr));
+        addr.sun_family = AF_UNIX;
+        strncpy(addr.sun_path, "/tmp/et-gps-notify.sock", sizeof(addr.sun_path) - 1);
+        ::unlink("/tmp/et-gps-notify.sock");
+        if (::bind(fd, (struct sockaddr *)&addr, sizeof(addr)) == 0) {
+            delete m_gpsNotifySocket;
+            m_gpsNotifySocket = new QUdpSocket(this);
+            m_gpsNotifySocket->setSocketDescriptor(fd);
+            connect(m_gpsNotifySocket, &QUdpSocket::readyRead,
+                    this, &MainWindow::onGpsNotify);
+        } else {
+            ::close(fd);
+        }
+    }
 
     applyStyleSheet();
 
@@ -168,10 +193,13 @@ void MainWindow::clearUI()
     m_radioLabel      = nullptr;
     m_catLabel        = nullptr;
     m_audioLabel      = nullptr;
+    m_tncLabel        = nullptr;
     m_activeModeLabel = nullptr;
     m_stopBtn         = nullptr;
-    m_processBox      = nullptr;
-    m_operatorEditor  = nullptr;
+    m_processBox        = nullptr;
+    m_recentLayout      = nullptr;
+    m_recentTouchLayout = nullptr;
+    m_operatorEditor    = nullptr;
     m_ifaceEditor     = nullptr;
     m_radioCombo      = nullptr;
     m_radioNotesLabel = nullptr;
@@ -378,6 +406,11 @@ void MainWindow::buildDesktopUI()
         row2->addStretch();
         vl->addLayout(row2);
 
+        m_tncLabel = new QLabel("", section);
+        m_tncLabel->setObjectName("infoLabel");
+        m_tncLabel->setVisible(false);
+        vl->addWidget(m_tncLabel);
+
         main->addWidget(section);
         refreshInterfaces();
 
@@ -533,9 +566,8 @@ void MainWindow::buildDesktopUI()
             mb->setProperty("active", m_activeMode == modeId);
             m_modeButtons[modeId] = mb;
             connect(mb, &QPushButton::clicked, this, [this, modeId, modemWidget]() {
-                m_supervisor->startMode(modeId);
-                setActiveMode(modeId, m_modeLoader->nameForId(modeId, m_language));
                 modemWidget->setVisible(false);
+                onModeButtonClicked(modeId);
             });
             mg->addWidget(mb, row, col++);
             if (col >= 3) { col = 0; row++; }
@@ -569,12 +601,15 @@ void MainWindow::buildDesktopUI()
             QString mlbl = m.second;
             QPushButton *mb = new QPushButton(mlbl, modemWidget);
             mb->setObjectName("modemBtn");
-            connect(mb, &QPushButton::clicked, this, [this, modeId, key, modemWidget]() {
+            connect(mb, &QPushButton::clicked, this, [this, modeId, key, mlbl, modemWidget]() {
+                modemWidget->setVisible(false);
                 QJsonObject params;
                 params["modem"] = key;
                 m_supervisor->startMode(modeId, params);
-                setActiveMode(modeId, m_modeLoader->nameForId(modeId, m_language));
-                modemWidget->setVisible(false);
+                m_userConfig->addToRecent(modeId + ":" + key);
+                refreshRecentModes();
+                setActiveMode(modeId, m_modeLoader->nameForId(modeId, m_language) + " (" + mlbl + ")");
+                fastPoll();
             });
             mg->addWidget(mb, row, col++);
             if (col >= 3) { col = 0; row++; }
@@ -590,32 +625,19 @@ void MainWindow::buildDesktopUI()
 
     // --- RECENT MODES ---
     {
-        QStringList recents = m_userConfig->recentModes();
-        if (!recents.isEmpty()) {
-            QLabel *recentTitle = new QLabel((m_language == "fr" ? "⭐ RÉCENTS" : "⭐ RECENT"), sc);
-            recentTitle->setObjectName("sectionTitle");
-            recentTitle->setContentsMargins(8, 6, 0, 2);
-            sl->addWidget(recentTitle);
+        QLabel *recentTitle = new QLabel((m_language == "fr" ? "⭐ RÉCENTS" : "⭐ RECENT"), sc);
+        recentTitle->setObjectName("sectionTitle");
+        recentTitle->setContentsMargins(8, 6, 0, 2);
+        sl->addWidget(recentTitle);
 
-            QWidget *recentBox = new QWidget(sc);
-            QVBoxLayout *rl = new QVBoxLayout(recentBox);
-            rl->setContentsMargins(6, 6, 6, 8);
-            rl->setSpacing(5);
+        QWidget *recentBox = new QWidget(sc);
+        m_recentLayout = new QVBoxLayout(recentBox);
+        m_recentLayout->setContentsMargins(6, 6, 6, 8);
+        m_recentLayout->setSpacing(5);
+        sl->addWidget(recentBox);
+        sl->addWidget(makeSep(sc));
 
-            for (const QString &rid : recents) {
-                QString rname = m_modeLoader->nameForId(rid, m_language);
-                if (rname.isEmpty()) continue;
-                QPushButton *rbtn = new QPushButton(rname, recentBox);
-                rbtn->setProperty("active", m_activeMode == rid);
-                m_modeButtons[rid] = rbtn;
-                connect(rbtn, &QPushButton::clicked, this, [this, rid]() {
-                    onModeButtonClicked(rid);
-                });
-                rl->addWidget(rbtn);
-            }
-            sl->addWidget(recentBox);
-            sl->addWidget(makeSep(sc));
-        }
+        refreshRecentModes();
     }
 
     // --- MESSAGING ---
@@ -680,11 +702,7 @@ void MainWindow::buildDesktopUI()
         addModeBtn(cl, "mercury",           "Mercury HF (Standalone)");
     }
 
-    sl->addStretch();
-    scroll->setWidget(sc);
-    main->addWidget(scroll, 1);
-
-    // Version label at bottom
+    // Version label — inside scroll area so it's always reachable at any DPI
     {
         QString ver;
         QFile mf("/opt/emcomm-tools/manifest.json");
@@ -698,12 +716,16 @@ void MainWindow::buildDesktopUI()
                 ver = QString::fromUtf8(vf.readAll()).trimmed();
         }
         if (!ver.isEmpty()) {
-            QLabel *verLabel = new QLabel("LiaisonOS v" + ver, central);
+            QLabel *verLabel = new QLabel("LiaisonOS v" + ver, sc);
             verLabel->setAlignment(Qt::AlignCenter);
             verLabel->setStyleSheet("color: #555555; font-size: 11px; padding: 4px 0;");
-            main->addWidget(verLabel);
+            sl->addWidget(verLabel);
         }
     }
+
+    sl->addStretch();
+    scroll->setWidget(sc);
+    main->addWidget(scroll, 1);
 
     // Snap to right edge, full available height (respects panel)
     QRect geo = QApplication::primaryScreen()->availableGeometry();
@@ -1020,6 +1042,12 @@ void MainWindow::buildTouchUI()
         ifRow2->addWidget(m_audioLabel);
         ifRow2->addStretch();
         ifVL->addLayout(ifRow2);
+
+        m_tncLabel = new QLabel("", ifSection);
+        m_tncLabel->setStyleSheet("font-size: 12px; color: #4ade80;");
+        m_tncLabel->setVisible(false);
+        ifVL->addWidget(m_tncLabel);
+
         headerHL->addWidget(ifSection, 1);
 
         refreshInterfaces();
@@ -1117,6 +1145,17 @@ void MainWindow::buildTouchUI()
         m_modeButtons[modeId] = btn;
         row->addWidget(btn, 1);
     };
+
+    // --- RECENT MODES (touch) ---
+    {
+        QVBoxLayout *cl = addTouchSection((m_language == "fr" ? "⭐ RÉCENTS" : "⭐ RECENT"), true);
+        QWidget *cw = qobject_cast<QWidget*>(cl->parent());
+        QHBoxLayout *row = makeRow(cl, cw);
+        m_recentTouchLayout = new QHBoxLayout();
+        m_recentTouchLayout->setSpacing(8);
+        row->addLayout(m_recentTouchLayout, 1);
+        refreshRecentModes();
+    }
 
     // --- MESSAGING ---
     {
@@ -1450,9 +1489,27 @@ void MainWindow::onToggleTouchMode()
 
 void MainWindow::onModeButtonClicked(const QString &modeId)
 {
+    // modeId may be a composite "id:modem" stored by addParamMode
+    QString baseId = modeId;
+    QString modem;
+    int sep = modeId.indexOf(':');
+    if (sep >= 0) {
+        baseId = modeId.left(sep);
+        modem  = modeId.mid(sep + 1);
+    }
+
     m_userConfig->addToRecent(modeId);
-    m_supervisor->startMode(modeId);
-    setActiveMode(modeId, m_modeLoader->nameForId(modeId, m_language));
+    refreshRecentModes();
+
+    if (!modem.isEmpty()) {
+        QJsonObject params;
+        params["modem"] = modem;
+        m_supervisor->startMode(baseId, params);
+        setActiveMode(baseId, m_modeLoader->nameForId(baseId, m_language) + " (" + modem + ")");
+    } else {
+        m_supervisor->startMode(baseId);
+        setActiveMode(baseId, m_modeLoader->nameForId(baseId, m_language));
+    }
     fastPoll();
 }
 
@@ -1615,6 +1672,48 @@ void MainWindow::startClockTimer()
 }
 
 // ---------------------------------------------------------------------------
+// GPS notify — receives JSON from QtGpsSync over /tmp/et-gps-notify.sock
+// ---------------------------------------------------------------------------
+
+void MainWindow::onGpsNotify()
+{
+    while (m_gpsNotifySocket->hasPendingDatagrams()) {
+        QByteArray data;
+        data.resize(m_gpsNotifySocket->pendingDatagramSize());
+        m_gpsNotifySocket->readDatagram(data.data(), data.size());
+
+        QJsonDocument doc = QJsonDocument::fromJson(data);
+        if (doc.isObject()) {
+            QJsonObject obj = doc.object();
+            if (obj.contains("grid")) {
+                // Save grid/lat/lon to user.json via UserConfig
+                QString grid = obj.value("grid").toString();
+                double  lat  = obj.value("lat").toDouble();
+                double  lon  = obj.value("lon").toDouble();
+                m_userConfig->updateGpsPosition(grid, lat, lon);
+                m_gpsActive = true;
+                if (m_gridLabel) {
+                    m_gridLabel->setText(grid);
+                    m_gridLabel->setStyleSheet("font-size: 12px; font-weight: bold; color: #4ade80;");
+                }
+                return;
+            }
+        }
+
+        // Plain text messages
+        QString msg = QString::fromUtf8(data).trimmed();
+        if (msg == "gps:closed") {
+            m_gpsActive = false;
+            if (m_gridLabel) {
+                m_gridLabel->setStyleSheet(m_userConfig->tracking()
+                    ? "font-size: 12px; font-weight: bold; color: #4ade80;"
+                    : "font-size: 12px; color: #9e9e9e;");
+            }
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
 // Operator refresh — callsign, grid (green when tracking)
 // ---------------------------------------------------------------------------
 
@@ -1629,6 +1728,69 @@ void MainWindow::refreshOperator()
         m_gridLabel->setStyleSheet(m_userConfig->tracking()
             ? "font-size: 12px; font-weight: bold; color: #4ade80;"
             : "font-size: 12px; color: #9e9e9e;");
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Recent modes refresh — called after every mode launch and on configChanged
+// ---------------------------------------------------------------------------
+
+void MainWindow::refreshRecentModes()
+{
+    QStringList recents = m_userConfig->recentModes();
+
+    // Desktop
+    if (m_recentLayout) {
+        QLayoutItem *item;
+        while ((item = m_recentLayout->takeAt(0))) {
+            if (item->widget()) item->widget()->deleteLater();
+            delete item;
+        }
+        for (const QString &rid : recents) {
+            QString baseId = rid;
+            QString modem;
+            int sep = rid.indexOf(':');
+            if (sep >= 0) { baseId = rid.left(sep); modem = rid.mid(sep + 1); }
+            QString rname = m_modeLoader->nameForId(baseId, m_language);
+            if (rname.isEmpty()) continue;
+            if (!modem.isEmpty()) rname += " (" + modem + ")";
+            QPushButton *rbtn = new QPushButton(rname);
+            rbtn->setProperty("active", m_activeMode == baseId);
+            connect(rbtn, &QPushButton::clicked, this, [this, rid]() {
+                onModeButtonClicked(rid);
+            });
+            m_recentLayout->addWidget(rbtn);
+        }
+    }
+
+    // Touch
+    if (m_recentTouchLayout) {
+        QLayoutItem *item;
+        while ((item = m_recentTouchLayout->takeAt(0))) {
+            if (item->widget()) item->widget()->deleteLater();
+            delete item;
+        }
+        const QString cardSS =
+            "QPushButton { background: #1e3a1e; color: #e8e8e8; border: 1px solid #3a6b3a;"
+            "  border-radius: 10px; font-size: 15px; font-weight: bold;"
+            "  text-align: center; }"
+            "QPushButton:pressed { background: #2d5a2d; }";
+        for (const QString &rid : recents) {
+            QString baseId = rid;
+            QString modem;
+            int sep = rid.indexOf(':');
+            if (sep >= 0) { baseId = rid.left(sep); modem = rid.mid(sep + 1); }
+            QString rname = m_modeLoader->nameForId(baseId, m_language);
+            if (rname.isEmpty()) continue;
+            if (!modem.isEmpty()) rname += " (" + modem + ")";
+            QPushButton *rbtn = new QPushButton(rname);
+            rbtn->setMinimumHeight(80);
+            rbtn->setStyleSheet(cardSS);
+            connect(rbtn, &QPushButton::clicked, this, [this, rid]() {
+                onModeButtonClicked(rid);
+            });
+            m_recentTouchLayout->addWidget(rbtn, 1);
+        }
     }
 }
 
@@ -1752,5 +1914,40 @@ void MainWindow::refreshInterfaces()
     } else {
         m_audioLabel->setText("Audio: ✗");
         m_audioLabel->setStyleSheet("color: #cc0000;");
+    }
+
+    // TNC / VARA / Mercury IP:PORT label — shown only for relevant active modes
+    if (m_tncLabel) {
+        bool isTnc     = (m_activeMode == "direwolf-tnc");
+        bool isVara    = (m_activeMode == "vara-hf" || m_activeMode == "vara-fm");
+        bool isMercury = (m_activeMode == "mercury" || m_activeMode == "winlink-mercury");
+        if (isTnc || isVara || isMercury) {
+            QString ip = "?";
+            QProcess p;
+            p.start("hostname", {"-I"});
+            p.waitForFinished(2000);
+            QString out = QString::fromUtf8(p.readAllStandardOutput()).trimmed();
+            if (!out.isEmpty())
+                ip = out.split(' ').first();
+
+            if (isTnc) {
+                QString port = "8001";
+                QProcess chk;
+                chk.start("ss", {"-tln", QString("sport = :%1").arg(port)});
+                chk.waitForFinished(2000);
+                bool up = chk.readAllStandardOutput().contains(port.toUtf8());
+                m_tncLabel->setText(QString("TNC: %1 %2:%3").arg(up ? "✓" : "✗").arg(ip).arg(port));
+                m_tncLabel->setStyleSheet(up ? "color: #4ade80;" : "color: #cc0000;");
+            } else if (isMercury) {
+                m_tncLabel->setText(QString("Mercury: %1:8300").arg(ip));
+                m_tncLabel->setStyleSheet("color: #4ade80;");
+            } else {
+                m_tncLabel->setText(QString("VARA: %1:8300").arg(ip));
+                m_tncLabel->setStyleSheet("color: #4ade80;");
+            }
+            m_tncLabel->setVisible(true);
+        } else {
+            m_tncLabel->setVisible(false);
+        }
     }
 }

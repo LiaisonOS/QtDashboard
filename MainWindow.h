@@ -15,10 +15,13 @@
 #include <QLabel>
 #include <QMap>
 #include <QPushButton>
+#include <QVBoxLayout>
+#include <QHBoxLayout>
 #include <QJsonArray>
 #include <QLineEdit>
 #include <QComboBox>
 #include <QEvent>
+#include <QUdpSocket>
 #include "UserConfig.h"
 #include "SupervisorClient.h"
 #include "ModeLoader.h"
@@ -37,6 +40,7 @@ public:
 
 private slots:
     void onTouchModeChanged(bool enabled);
+    void onGpsNotify();
     void onStatusReceived(const QJsonObject &status);
     void onModeButtonClicked(const QString &modeId);
     void onStopClicked();
@@ -45,6 +49,7 @@ private slots:
     void updateClock();
     void refreshInterfaces();
     void refreshOperator();
+    void refreshRecentModes();
     void fastPoll();
     void toggleOperatorEditor();
     void saveOperator();
@@ -66,6 +71,7 @@ private:
     ModeLoader        *m_modeLoader;
     QTimer            *m_statusTimer;
     QTimer            *m_clockTimer;
+    QUdpSocket        *m_gpsNotifySocket = nullptr;
 
     // Top section labels — reset in clearUI()
     QLabel       *m_clockLabel      = nullptr;
@@ -76,9 +82,14 @@ private:
     QLabel       *m_radioLabel      = nullptr;
     QLabel       *m_catLabel        = nullptr;
     QLabel       *m_audioLabel      = nullptr;
+    QLabel       *m_tncLabel        = nullptr;
     QLabel       *m_activeModeLabel = nullptr;
     QPushButton  *m_stopBtn         = nullptr;
     QWidget      *m_processBox      = nullptr;
+
+    // Recent modes section — refreshed on every mode launch
+    QVBoxLayout  *m_recentLayout      = nullptr;  // desktop
+    QHBoxLayout  *m_recentTouchLayout = nullptr;  // touch
 
     // Operator inline editor
     QWidget      *m_operatorEditor  = nullptr;
@@ -97,6 +108,7 @@ private:
     QString       m_activeModeName;
     QString       m_language;
     QString       m_lastCrash;
+    bool          m_gpsActive = false;
 
     QMap<QString, QPushButton*> m_modeButtons;
 };

@@ -10,8 +10,10 @@
 
 #include <QObject>
 #include <QFileSystemWatcher>
+#include <QTimer>
 #include <QString>
 #include <QStringList>
+#include <QJsonObject>
 
 class UserConfig : public QObject
 {
@@ -30,6 +32,7 @@ public:
     void setTouchMode(bool enabled);
     void setTracking(bool enabled);
     void addToRecent(const QString &modeId);
+    void updateGpsPosition(const QString &grid, double lat, double lon);
 
 signals:
     void touchModeChanged(bool enabled);
@@ -37,13 +40,18 @@ signals:
 
 private slots:
     void onFileChanged(const QString &path);
+    void onPollTimer();
 
 private:
     void load();
     void save();
+    void writeJson();
 
     QString m_path;
     QFileSystemWatcher m_watcher;
+    QTimer  m_pollTimer;
+    QJsonObject m_json;   // full in-memory copy of user.json
+    QString m_lastGrid;
 
     bool        m_touchMode   = false;
     bool        m_tracking    = false;

@@ -5,11 +5,10 @@
 //
 
 #include "UserConfig.h"
+#include <QDebug>
 #include <QFile>
 #include <QJsonDocument>
-#include <QJsonObject>
 #include <QJsonArray>
-#include <QStandardPaths>
 #include <QDir>
 
 UserConfig::UserConfig(QObject *parent)
@@ -21,6 +20,7 @@ UserConfig::UserConfig(QObject *parent)
             this, &UserConfig::onFileChanged);
 
     load();
+    m_lastGrid = m_gridSquare;
     m_watcher.addPath(m_path);
 }
 
@@ -36,37 +36,37 @@ void UserConfig::load()
     if (doc.isNull() || !doc.isObject())
         return;
 
-    QJsonObject obj = doc.object();
-    m_touchMode  = obj.value("touch_mode").toBool(false);
-    m_tracking   = obj.value("tracking").toBool(false);
-    m_callsign   = obj.value("callsign").toString();
-    m_gridSquare = obj.value("grid").toString();
-    m_language   = obj.value("language").toString("en");
+    m_json = doc.object();
+
+    m_touchMode  = m_json.value("touch_mode").toBool(false);
+    m_tracking   = m_json.value("tracking").toBool(false);
+    m_callsign   = m_json.value("callsign").toString();
+    m_gridSquare = m_json.value("grid").toString();
+    m_language   = m_json.value("language").toString("en");
 
     m_recentModes.clear();
-    for (const QJsonValue &v : obj.value("recent_modes").toArray())
+    for (const QJsonValue &v : m_json.value("recent_modes").toArray())
         m_recentModes.append(v.toString());
+}
+
+void UserConfig::writeJson()
+{
+    m_watcher.removePath(m_path);
+    QFile fw(m_path);
+    if (!fw.open(QIODevice::WriteOnly | QIODevice::Truncate)) {
+        m_watcher.addPath(m_path);
+        return;
+    }
+    fw.write(QJsonDocument(m_json).toJson(QJsonDocument::Indented));
+    fw.close();
+    m_watcher.addPath(m_path);
 }
 
 void UserConfig::save()
 {
-    QFile f(m_path);
-    if (!f.open(QIODevice::ReadOnly))
-        return;
-
-    QJsonDocument doc = QJsonDocument::fromJson(f.readAll());
-    f.close();
-
-    QJsonObject obj = doc.isObject() ? doc.object() : QJsonObject();
-    obj["touch_mode"] = m_touchMode;
-    obj["tracking"]   = m_tracking;
-
-    QFile fw(m_path);
-    if (!fw.open(QIODevice::WriteOnly))
-        return;
-
-    fw.write(QJsonDocument(obj).toJson(QJsonDocument::Indented));
-    fw.close();
+    m_json["touch_mode"] = m_touchMode;
+    m_json["tracking"]   = m_tracking;
+    writeJson();
 }
 
 void UserConfig::setTouchMode(bool enabled)
@@ -90,23 +90,23 @@ void UserConfig::addToRecent(const QString &modeId)
 {
     m_recentModes.removeAll(modeId);
     m_recentModes.prepend(modeId);
-    while (m_recentModes.size() > 3)
+    while (m_recentModes.size() > 6)
         m_recentModes.removeLast();
 
-    QFile f(m_path);
-    if (!f.open(QIODevice::ReadOnly)) return;
-    QJsonDocument doc = QJsonDocument::fromJson(f.readAll());
-    f.close();
-
-    QJsonObject obj = doc.isObject() ? doc.object() : QJsonObject();
     QJsonArray arr;
     for (const QString &id : m_recentModes) arr.append(id);
-    obj["recent_modes"] = arr;
+    m_json["recent_modes"] = arr;
+    writeJson();
+}
 
-    QFile fw(m_path);
-    if (!fw.open(QIODevice::WriteOnly)) return;
-    fw.write(QJsonDocument(obj).toJson(QJsonDocument::Indented));
-    fw.close();
+void UserConfig::updateGpsPosition(const QString &grid, double lat, double lon)
+{
+    m_gridSquare     = grid;
+    m_json["grid"]   = grid;
+    m_json["lat"]    = lat;
+    m_json["lon"]    = lon;
+    m_lastGrid       = grid;
+    writeJson();
 }
 
 void UserConfig::onFileChanged(const QString &path)
@@ -114,9 +114,30 @@ void UserConfig::onFileChanged(const QString &path)
     Q_UNUSED(path)
     bool prevTouch = m_touchMode;
     load();
+    m_lastGrid = m_gridSquare;
     // Re-add path — some editors replace the file (inotify loses track)
     m_watcher.addPath(m_path);
     emit configChanged();
     if (m_touchMode != prevTouch)
         emit touchModeChanged(m_touchMode);
+}
+
+void UserConfig::onPollTimer()
+{
+    QFile f(m_path);
+    if (!f.open(QIODevice::ReadOnly)) return;
+    QJsonDocument doc = QJsonDocument::fromJson(f.readAll());
+    f.close();
+    if (doc.isNull() || !doc.isObject()) return;
+
+    QString newGrid = doc.object().value("grid").toString();
+    if (newGrid != m_lastGrid) {
+        m_lastGrid = newGrid;
+        bool prevTouch = m_touchMode;
+        load();
+        m_watcher.addPath(m_path);
+        emit configChanged();
+        if (m_touchMode != prevTouch)
+            emit touchModeChanged(m_touchMode);
+    }
 }
