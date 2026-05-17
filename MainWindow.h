@@ -55,6 +55,7 @@ private slots:
     void saveOperator();
     void toggleIfaceEditor();
     void applyRadio();
+    void onScreenGeometryChanged();
 
 private:
     void buildDesktopUI();

@@ -1,6 +1,6 @@
 QT += core gui widgets network
 
-TARGET = QtDashboard
+TARGET  = QtDashboard
 TEMPLATE = app
 
 DEFINES += QT_DEPRECATED_WARNINGS

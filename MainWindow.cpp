@@ -60,6 +60,8 @@ MainWindow::MainWindow(QWidget *parent)
             this, &MainWindow::refreshStatus);
     connect(m_clockTimer, &QTimer::timeout,
             this, &MainWindow::updateClock);
+    connect(QApplication::primaryScreen(), &QScreen::availableGeometryChanged,
+            this, &MainWindow::onScreenGeometryChanged);
 
     m_statusTimer->start(5000);
     startClockTimer();
@@ -1515,20 +1517,20 @@ void MainWindow::onModeButtonClicked(const QString &modeId)
 
 void MainWindow::fastPoll()
 {
-    // Poll rapidly for 5s after a mode action to get quick feedback
+    // Poll a few times after a mode action to get quick feedback
     m_statusTimer->stop();
     int *count = new int(0);
     QTimer *t = new QTimer(this);
     connect(t, &QTimer::timeout, this, [this, t, count]() {
         m_supervisor->requestStatus();
-        if (++(*count) >= 10) {
+        if (++(*count) >= 3) {
             t->stop();
             t->deleteLater();
             delete count;
             m_statusTimer->start(5000);
         }
     });
-    t->start(500);
+    t->start(2000);
 }
 
 void MainWindow::onStopClicked()
@@ -1612,6 +1614,14 @@ void MainWindow::refreshStatus()
 {
     m_supervisor->requestStatus();
     refreshInterfaces();
+}
+
+void MainWindow::onScreenGeometryChanged()
+{
+    if (m_userConfig->touchMode())
+        buildTouchUI();
+    else
+        buildDesktopUI();
 }
 
 // ---------------------------------------------------------------------------
