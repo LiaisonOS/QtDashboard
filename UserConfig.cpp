@@ -14,7 +14,7 @@
 UserConfig::UserConfig(QObject *parent)
     : QObject(parent)
 {
-    m_path = QDir::homePath() + "/.config/emcomm-tools/user.json";
+    m_path = QDir::homePath() + "/.config/liaisonos/user.json";
 
     connect(&m_watcher, &QFileSystemWatcher::fileChanged,
             this, &UserConfig::onFileChanged);
@@ -47,6 +47,17 @@ void UserConfig::load()
     m_recentModes.clear();
     for (const QJsonValue &v : m_json.value("recent_modes").toArray())
         m_recentModes.append(v.toString());
+
+    // Sync the legacy /tmp/et-gps-tracking flag file used by et-repeater
+    // and any other Flask app polling /api/tracking-status. This ensures
+    // the flag reflects the persisted state even before any Track toggle.
+    const QString flag = "/tmp/et-gps-tracking";
+    if (m_tracking) {
+        QFile f(flag);
+        if (f.open(QIODevice::WriteOnly | QIODevice::Truncate)) f.close();
+    } else {
+        QFile::remove(flag);
+    }
 }
 
 void UserConfig::writeJson()
@@ -84,6 +95,18 @@ void UserConfig::setTracking(bool enabled)
         return;
     m_tracking = enabled;
     save();
+
+    // Legacy flag file used by et-repeater (and any other Flask app polling
+    // /api/tracking-status). The old Python/GTK et-dashboard used to create
+    // this; QtDashboard must keep doing it so downstream apps see the same
+    // tracking signal.
+    const QString flag = "/tmp/et-gps-tracking";
+    if (enabled) {
+        QFile f(flag);
+        if (f.open(QIODevice::WriteOnly | QIODevice::Truncate)) f.close();
+    } else {
+        QFile::remove(flag);
+    }
 }
 
 void UserConfig::addToRecent(const QString &modeId)

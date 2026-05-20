@@ -25,6 +25,7 @@
 #include "UserConfig.h"
 #include "SupervisorClient.h"
 #include "ModeLoader.h"
+#include "MenuLoader.h"
 
 QT_BEGIN_NAMESPACE
 namespace Ui { class MainWindow; }
@@ -56,10 +57,13 @@ private slots:
     void toggleIfaceEditor();
     void applyRadio();
     void onScreenGeometryChanged();
+    void onMenuChanged();
 
 private:
     void buildDesktopUI();
     void buildTouchUI();
+    void buildStripUI();
+    void setStripMode(bool enabled);
     void clearUI();
     void applyStyleSheet();
     void startClockTimer();
@@ -70,6 +74,7 @@ private:
     UserConfig        *m_userConfig;
     SupervisorClient  *m_supervisor;
     ModeLoader        *m_modeLoader;
+    MenuLoader        *m_menu;
     QTimer            *m_statusTimer;
     QTimer            *m_clockTimer;
     QUdpSocket        *m_gpsNotifySocket = nullptr;
@@ -91,6 +96,7 @@ private:
     // Recent modes section — refreshed on every mode launch
     QVBoxLayout  *m_recentLayout      = nullptr;  // desktop
     QHBoxLayout  *m_recentTouchLayout = nullptr;  // touch
+    QVBoxLayout  *m_recentStripLayout = nullptr;  // strip
 
     // Operator inline editor
     QWidget      *m_operatorEditor  = nullptr;
@@ -110,6 +116,7 @@ private:
     QString       m_language;
     QString       m_lastCrash;
     bool          m_gpsActive = false;
+    bool          m_stripMode = false;
 
     QMap<QString, QPushButton*> m_modeButtons;
 };

@@ -10,12 +10,14 @@ SOURCES += \
     MainWindow.cpp \
     SupervisorClient.cpp \
     ModeLoader.cpp \
+    MenuLoader.cpp \
     UserConfig.cpp
 
 HEADERS += \
     MainWindow.h \
     SupervisorClient.h \
     ModeLoader.h \
+    MenuLoader.h \
     UserConfig.h
 
 FORMS += \

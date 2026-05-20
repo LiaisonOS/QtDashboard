@@ -13,6 +13,8 @@
 #include <QLabel>
 #include <QScrollArea>
 #include <QFrame>
+#include <QPropertyAnimation>
+#include <QEasingCurve>
 #include <QDateTime>
 #include <QJsonDocument>
 #include <QJsonObject>
@@ -28,6 +30,7 @@
 #include <QScroller>
 
 #include <memory>
+#include <tuple>
 #include <sys/socket.h>
 #include <sys/un.h>
 #include <unistd.h>
@@ -38,6 +41,7 @@ MainWindow::MainWindow(QWidget *parent)
     , m_userConfig(new UserConfig(this))
     , m_supervisor(new SupervisorClient(this))
     , m_modeLoader(new ModeLoader(this))
+    , m_menu(nullptr)
     , m_statusTimer(new QTimer(this))
     , m_clockTimer(new QTimer(this))
 {
@@ -47,6 +51,10 @@ MainWindow::MainWindow(QWidget *parent)
 
     m_language = m_userConfig->language();
     m_modeLoader->load();
+    m_menu = new MenuLoader(m_modeLoader, this);
+    connect(m_menu, &MenuLoader::menuChanged,
+            this, &MainWindow::onMenuChanged,
+            Qt::QueuedConnection);
 
     connect(m_userConfig, &UserConfig::touchModeChanged,
             this, &MainWindow::onTouchModeChanged);
@@ -54,8 +62,12 @@ MainWindow::MainWindow(QWidget *parent)
             this, &MainWindow::refreshOperator);
     connect(m_userConfig, &UserConfig::configChanged,
             this, &MainWindow::refreshRecentModes);
+    // tracking() change → GPS label needs to flip between green/yellow
+    connect(m_userConfig, &UserConfig::configChanged,
+            this, &MainWindow::refreshInterfaces);
     connect(m_supervisor, &SupervisorClient::statusReceived,
-            this, &MainWindow::onStatusReceived);
+            this, &MainWindow::onStatusReceived,
+            Qt::QueuedConnection);
     connect(m_statusTimer, &QTimer::timeout,
             this, &MainWindow::refreshStatus);
     connect(m_clockTimer, &QTimer::timeout,
@@ -201,6 +213,7 @@ void MainWindow::clearUI()
     m_processBox        = nullptr;
     m_recentLayout      = nullptr;
     m_recentTouchLayout = nullptr;
+    m_recentStripLayout = nullptr;
     m_operatorEditor    = nullptr;
     m_ifaceEditor     = nullptr;
     m_radioCombo      = nullptr;
@@ -642,69 +655,44 @@ void MainWindow::buildDesktopUI()
         refreshRecentModes();
     }
 
-    // --- MESSAGING ---
-    {
-        QVBoxLayout *cl = addSection("MESSAGING");
-        addMultiMode(cl, "Winlink", {
-            {"winlink-vara-hf", "VARA HF"},
-            {"winlink-ardop",   "ARDOP"},
-            {"winlink-mercury", "Mercury"},
-            {"winlink-vara-fm", "VARA FM"},
-            {"winlink-packet",  "Packet"},
-        });
-        addModeBtn(cl, "varac",              "VarAC (VARA Chat)");
-        addModeBtn(cl, "js8call",            "JS8Call");
-        addModeBtn(cl, "fldigi",             "fldigi");
-        addModeBtn(cl, "chat-chattervox",    "Chattervox");
-        addModeBtn(cl, "chat-chattervox-bt", "Chattervox (BT)");
+    // --- JSON-driven groups (system default + user overrides merged by MenuLoader) ---
+    for (const MenuLoader::Group &g : m_menu->menu()) {
+        const QString title = (m_language == "fr" && !g.titleFr.isEmpty()) ? g.titleFr : g.titleEn;
+        QVBoxLayout *cl = addSection(title);
+        for (const MenuLoader::Item &it : g.items) {
+            const QString label = MenuLoader::labelFor(it.label, it.labelTouch, /*touch*/ false);
+            switch (it.type) {
+            case MenuLoader::ItemType::Mode:
+                addModeBtn(cl, it.id, label);
+                break;
+            case MenuLoader::ItemType::Multi: {
+                ModeList ml;
+                for (const MenuLoader::ModeRef &m : it.modes) {
+                    ml.append({m.id, MenuLoader::labelFor(m.label, m.labelTouch, false)});
+                }
+                addMultiMode(cl, label, ml);
+                break;
+            }
+            case MenuLoader::ItemType::Param: {
+                ModemList opts;
+                for (const MenuLoader::ParamOption &o : it.options) {
+                    opts.append({o.value, MenuLoader::labelFor(o.label, o.labelTouch, false)});
+                }
+                addParamMode(cl, it.id, label, opts);
+                break;
+            }
+            }
+        }
     }
 
-    // --- APRS ---
-    {
-        QVBoxLayout *cl = addSection("APRS");
-        addModeBtn(cl, "aprs-client",     "Client (YAAC)");
-        addModeBtn(cl, "aprs-client-bt",  "Client (YAAC BT)");
-        addModeBtn(cl, "aprs-digipeater", "Digipeater");
-    }
+    sl->addStretch();
+    scroll->setWidget(sc);
+    main->addWidget(scroll, 1);
 
-    // --- BBS ---
-    {
-        QVBoxLayout *cl = addSection("BBS");
-        addParamMode(cl, "bbs-client-qttermtcp", "QtTermTCP", {
-            {"vara-hf", "VARA HF"},
-            {"vara-fm", "VARA FM"},
-            {"mercury", "Mercury"},
-            {"300",     "HF 300"},
-            {"1200",    "Pkt 1200"},
-            {"9600",    "Pkt 9600"},
-        });
-        addParamMode(cl, "bbs-client-paracon", "Paracon", {
-            {"300",  "HF 300"},
-            {"1200", "Pkt 1200"},
-            {"9600", "Pkt 9600"},
-        });
-        addParamMode(cl, "bbs-server", "LinBPQ", {
-            {"vara-hf", "VARA HF"},
-            {"vara-fm", "VARA FM"},
-            {"mercury", "Mercury"},
-            {"300",     "HF 300"},
-            {"1200",    "Pkt 1200"},
-            {"9600",    "Pkt 9600"},
-        });
-    }
-
-    // --- TOOLS ---
-    {
-        QVBoxLayout *cl = addSection("TOOLS");
-        addModeBtn(cl, "ft8",               "FT8/FT4 (WSJT-X)");
-        addModeBtn(cl, "direwolf-tnc",      "Direwolf KISS TNC");
-        addModeBtn(cl, "packet-digipeater", "Packet Digipeater");
-        addModeBtn(cl, "vara-hf",           "VARA HF (Standalone)");
-        addModeBtn(cl, "vara-fm",           "VARA FM (Standalone)");
-        addModeBtn(cl, "mercury",           "Mercury HF (Standalone)");
-    }
-
-    // Version label — inside scroll area so it's always reachable at any DPI
+    // Bottom bar — STRIP collapse trigger on the left, LiaisonOS version on
+    // the right. Whole bar is clickable; the labels are mouse-transparent so
+    // clicks pass through to the QPushButton beneath. Comment out this block
+    // to ship without Strip mode (the version label disappears with it).
     {
         QString ver;
         QFile mf("/opt/emcomm-tools/manifest.json");
@@ -717,17 +705,42 @@ void MainWindow::buildDesktopUI()
             if (vf.open(QFile::ReadOnly))
                 ver = QString::fromUtf8(vf.readAll()).trimmed();
         }
-        if (!ver.isEmpty()) {
-            QLabel *verLabel = new QLabel("LiaisonOS v" + ver, sc);
-            verLabel->setAlignment(Qt::AlignCenter);
-            verLabel->setStyleSheet("color: #555555; font-size: 11px; padding: 4px 0;");
-            sl->addWidget(verLabel);
-        }
-    }
 
-    sl->addStretch();
-    scroll->setWidget(sc);
-    main->addWidget(scroll, 1);
+        QPushButton *bottomBar = new QPushButton(central);
+        bottomBar->setFixedHeight(28);
+        bottomBar->setCursor(Qt::PointingHandCursor);
+        bottomBar->setStyleSheet(
+            "QPushButton { background: #1a3a2a; color: #7de8b0; border: 1px solid #2a5a3a;"
+            "  border-radius: 4px; text-align: left; padding: 0; }"
+            "QPushButton:hover { background: #1f4432; }"
+        );
+        bottomBar->setToolTip("Collapse to strip mode");
+
+        QHBoxLayout *bl = new QHBoxLayout(bottomBar);
+        bl->setContentsMargins(10, 0, 10, 0);
+        bl->setSpacing(0);
+
+        QLabel *stripLbl = new QLabel("⮕ STRIP", bottomBar);
+        stripLbl->setStyleSheet(
+            "color: #7de8b0; font-size: 11px; font-weight: bold; background: transparent; border: none;"
+        );
+        stripLbl->setAttribute(Qt::WA_TransparentForMouseEvents);
+        bl->addWidget(stripLbl);
+
+        bl->addStretch();
+
+        if (!ver.isEmpty()) {
+            QLabel *verLbl = new QLabel("LiaisonOS v" + ver, bottomBar);
+            verLbl->setStyleSheet(
+                "color: #5a8a6a; font-size: 10px; background: transparent; border: none;"
+            );
+            verLbl->setAttribute(Qt::WA_TransparentForMouseEvents);
+            bl->addWidget(verLbl);
+        }
+
+        connect(bottomBar, &QPushButton::clicked, this, [this]() { setStripMode(true); });
+        main->addWidget(bottomBar);
+    }
 
     // Snap to right edge, full available height (respects panel)
     QRect geo = QApplication::primaryScreen()->availableGeometry();
@@ -1159,149 +1172,118 @@ void MainWindow::buildTouchUI()
         refreshRecentModes();
     }
 
-    // --- MESSAGING ---
-    {
-        QVBoxLayout *cl = addTouchSection("MESSAGING");
+    // --- JSON-driven groups (system default + user overrides merged by MenuLoader) ---
+    // Cards distribute 3-per-row inside each section, matching today's layout.
+    const int CARDS_PER_ROW = 3;
+    for (const MenuLoader::Group &g : m_menu->menu()) {
+        const QString title = (m_language == "fr" && !g.titleFr.isEmpty()) ? g.titleFr : g.titleEn;
+        QVBoxLayout *cl = addTouchSection(title);
         QWidget *cw = qobject_cast<QWidget*>(cl->parent());
 
-        // Row 0 then picker below it
-        QHBoxLayout *row0 = makeRow(cl, cw);
-        auto [pw0, lbl0, phl0] = makePicker(cl, cw);
+        // One picker per section, shared by all multi/param items in this group.
+        // Created lazily so groups with only simple modes don't get an empty picker widget.
+        QWidget       *pw  = nullptr;
+        QLabel        *lbl = nullptr;
+        QHBoxLayout   *phl = nullptr;
+        auto ensurePicker = [&]() {
+            if (!pw) { auto t = makePicker(cl, cw); pw = std::get<0>(t); lbl = std::get<1>(t); phl = std::get<2>(t); }
+        };
 
-        // Winlink (multi-modem)
-        {
-            QPushButton *btn = new QPushButton("Winlink", cw);
-            btn->setMinimumHeight(80);
-            btn->setStyleSheet(cardSS);
-            connect(btn, &QPushButton::clicked, this, [this, pw0, lbl0, phl0, modemBtnSS]() {
-                bool open = pw0->isVisible();
-                QLayoutItem *it; while ((it=phl0->takeAt(0))) { if(it->widget()) it->widget()->deleteLater(); delete it; }
-                pw0->setVisible(!open);
-                if (!open) {
-                    lbl0->setText("— Winlink —");
-                    const QList<QPair<QString,QString>> ml = {{"winlink-vara-hf","VARA HF"},{"winlink-vara-fm","VARA FM"},{"winlink-packet","Packet"},{"winlink-ardop","ARDOP"}};
-                    for (const auto &m : ml) {
-                        QPushButton *mb = new QPushButton(m.second, pw0);
-                        mb->setMinimumHeight(68); mb->setStyleSheet(modemBtnSS);
-                        QString mid = m.first;
-                        connect(mb, &QPushButton::clicked, this, [this, mid, pw0](){ onModeButtonClicked(mid); pw0->setVisible(false); });
-                        phl0->addWidget(mb, 1);
-                    }
-                    phl0->addStretch();
+        QHBoxLayout *row = nullptr;
+        int colsInRow = 0;
+        auto nextRow = [&]() {
+            if (row && colsInRow > 0 && colsInRow < CARDS_PER_ROW)
+                row->addStretch(CARDS_PER_ROW - colsInRow);
+            row = makeRow(cl, cw);
+            colsInRow = 0;
+        };
+
+        for (const MenuLoader::Item &it : g.items) {
+            if (colsInRow >= CARDS_PER_ROW || !row) nextRow();
+            const QString itemLabel = MenuLoader::labelFor(it.label, it.labelTouch, /*touch*/ true);
+
+            switch (it.type) {
+            case MenuLoader::ItemType::Mode:
+                addCard(row, it.id, itemLabel);
+                break;
+
+            case MenuLoader::ItemType::Multi: {
+                ensurePicker();
+                QPushButton *btn = new QPushButton(itemLabel, cw);
+                btn->setMinimumHeight(80);
+                btn->setStyleSheet(cardSS);
+                // Capture modes by value so the lambda owns its own copy
+                QList<QPair<QString,QString>> ml;
+                for (const MenuLoader::ModeRef &m : it.modes) {
+                    ml.append({m.id, MenuLoader::labelFor(m.label, m.labelTouch, true)});
                 }
-            });
-            row0->addWidget(btn, 1);
-        }
-        addCard(row0, "chat-varac",   "VARAC");
-        addCard(row0, "chat-js8call", "JS8Call");
-
-        // Row 1
-        QHBoxLayout *row1 = makeRow(cl, cw);
-        addCard(row1, "chat-fldigi",     "Fldigi");
-        addCard(row1, "chat-chattervox", "Chattervox");
-        row1->addStretch(1);
-    }
-
-    // --- APRS ---
-    {
-        QVBoxLayout *cl = addTouchSection("APRS");
-        QWidget *cw = qobject_cast<QWidget*>(cl->parent());
-        QHBoxLayout *row0 = makeRow(cl, cw);
-        addCard(row0, "aprs-client",     "Client (YAAC)");
-        addCard(row0, "aprs-client-bt",  "Client (YAAC BT)");
-        addCard(row0, "aprs-digipeater", "Digipeater");
-    }
-
-    // --- BBS --- (row first, picker below)
-    {
-        QVBoxLayout *cl = addTouchSection("BBS");
-        QWidget *cw = qobject_cast<QWidget*>(cl->parent());
-        QHBoxLayout *row0 = makeRow(cl, cw);
-        auto [pw0, lbl0, phl0] = makePicker(cl, cw);
-
-        // QtTermTCP
-        {
-            QPushButton *btn = new QPushButton("QtTermTCP", cw);
-            btn->setMinimumHeight(80); btn->setStyleSheet(cardSS);
-            connect(btn, &QPushButton::clicked, this, [this, pw0, lbl0, phl0, modemBtnSS]() {
-                bool open = pw0->isVisible();
-                QLayoutItem *it; while ((it=phl0->takeAt(0))) { if(it->widget()) it->widget()->deleteLater(); delete it; }
-                pw0->setVisible(!open);
-                if (!open) {
-                    lbl0->setText("— QtTermTCP —");
-                    const QList<QPair<QString,QString>> ml = {{"vara-hf","VARA HF"},{"vara-fm","VARA FM"},{"mercury","Mercury"},{"300","HF 300"},{"1200","Pkt 1200"},{"9600","Pkt 9600"}};
-                    for (const auto &m : ml) {
-                        QPushButton *mb = new QPushButton(m.second, pw0);
-                        mb->setMinimumHeight(68); mb->setStyleSheet(modemBtnSS);
-                        QString k = m.first;
-                        connect(mb, &QPushButton::clicked, this, [this, k, pw0](){ QJsonObject p; p["modem"]=k; m_supervisor->startMode("bbs-client-qttermtcp",p); setActiveMode("bbs-client-qttermtcp",m_modeLoader->nameForId("bbs-client-qttermtcp",m_language)); fastPoll(); pw0->setVisible(false); });
-                        phl0->addWidget(mb, 1);
+                connect(btn, &QPushButton::clicked, this,
+                        [this, pw, lbl, phl, modemBtnSS, ml, itemLabel]() {
+                    bool open = pw->isVisible();
+                    QLayoutItem *qi; while ((qi=phl->takeAt(0))) { if(qi->widget()) qi->widget()->deleteLater(); delete qi; }
+                    pw->setVisible(!open);
+                    if (!open) {
+                        lbl->setText("— " + itemLabel + " —");
+                        for (const auto &m : ml) {
+                            QPushButton *mb = new QPushButton(m.second, pw);
+                            mb->setMinimumHeight(68); mb->setStyleSheet(modemBtnSS);
+                            QString mid = m.first;
+                            connect(mb, &QPushButton::clicked, this, [this, mid, pw](){
+                                onModeButtonClicked(mid); pw->setVisible(false);
+                            });
+                            phl->addWidget(mb, 1);
+                        }
+                        phl->addStretch();
                     }
-                    phl0->addStretch();
-                }
-            });
-            row0->addWidget(btn, 1);
-        }
-        // Paracon
-        {
-            QPushButton *btn = new QPushButton("Paracon", cw);
-            btn->setMinimumHeight(80); btn->setStyleSheet(cardSS);
-            connect(btn, &QPushButton::clicked, this, [this, pw0, lbl0, phl0, modemBtnSS]() {
-                bool open = pw0->isVisible();
-                QLayoutItem *it; while ((it=phl0->takeAt(0))) { if(it->widget()) it->widget()->deleteLater(); delete it; }
-                pw0->setVisible(!open);
-                if (!open) {
-                    lbl0->setText("— Paracon —");
-                    const QList<QPair<QString,QString>> ml = {{"300","HF 300"},{"1200","Pkt 1200"},{"9600","Pkt 9600"}};
-                    for (const auto &m : ml) {
-                        QPushButton *mb = new QPushButton(m.second, pw0);
-                        mb->setMinimumHeight(68); mb->setStyleSheet(modemBtnSS);
-                        QString k = m.first;
-                        connect(mb, &QPushButton::clicked, this, [this, k, pw0](){ QJsonObject p; p["modem"]=k; m_supervisor->startMode("bbs-client-paracon",p); setActiveMode("bbs-client-paracon",m_modeLoader->nameForId("bbs-client-paracon",m_language)); fastPoll(); pw0->setVisible(false); });
-                        phl0->addWidget(mb, 1);
-                    }
-                    phl0->addStretch();
-                }
-            });
-            row0->addWidget(btn, 1);
-        }
-        // LinBPQ
-        {
-            QPushButton *btn = new QPushButton("LinBPQ", cw);
-            btn->setMinimumHeight(80); btn->setStyleSheet(cardSS);
-            connect(btn, &QPushButton::clicked, this, [this, pw0, lbl0, phl0, modemBtnSS]() {
-                bool open = pw0->isVisible();
-                QLayoutItem *it; while ((it=phl0->takeAt(0))) { if(it->widget()) it->widget()->deleteLater(); delete it; }
-                pw0->setVisible(!open);
-                if (!open) {
-                    lbl0->setText("— LinBPQ —");
-                    const QList<QPair<QString,QString>> ml = {{"vara-hf","VARA HF"},{"vara-fm","VARA FM"},{"mercury","Mercury"},{"300","HF 300"},{"1200","Pkt 1200"},{"9600","Pkt 9600"}};
-                    for (const auto &m : ml) {
-                        QPushButton *mb = new QPushButton(m.second, pw0);
-                        mb->setMinimumHeight(68); mb->setStyleSheet(modemBtnSS);
-                        QString k = m.first;
-                        connect(mb, &QPushButton::clicked, this, [this, k, pw0](){ QJsonObject p; p["modem"]=k; m_supervisor->startMode("bbs-server",p); setActiveMode("bbs-server",m_modeLoader->nameForId("bbs-server",m_language)); fastPoll(); pw0->setVisible(false); });
-                        phl0->addWidget(mb, 1);
-                    }
-                    phl0->addStretch();
-                }
-            });
-            row0->addWidget(btn, 1);
-        }
-    }
+                });
+                row->addWidget(btn, 1);
+                break;
+            }
 
-    // --- TOOLS ---
-    {
-        QVBoxLayout *cl = addTouchSection("TOOLS");
-        QWidget *cw = qobject_cast<QWidget*>(cl->parent());
-        QHBoxLayout *row0 = makeRow(cl, cw);
-        addCard(row0, "ft8",               "FT8 / FT4");
-        addCard(row0, "direwolf-tnc",      "Direwolf TNC");
-        addCard(row0, "packet-digipeater", "Digipeater");
-        QHBoxLayout *row1 = makeRow(cl, cw);
-        addCard(row1, "vara-hf", "VARA HF");
-        addCard(row1, "vara-fm", "VARA FM");
-        addCard(row1, "mercury", "Mercury HF");
+            case MenuLoader::ItemType::Param: {
+                ensurePicker();
+                QPushButton *btn = new QPushButton(itemLabel, cw);
+                btn->setMinimumHeight(80);
+                btn->setStyleSheet(cardSS);
+                const QString modeId   = it.id;
+                const QString paramKey = it.paramKey.isEmpty() ? "modem" : it.paramKey;
+                QList<QPair<QString,QString>> ol;
+                for (const MenuLoader::ParamOption &o : it.options) {
+                    ol.append({o.value, MenuLoader::labelFor(o.label, o.labelTouch, true)});
+                }
+                connect(btn, &QPushButton::clicked, this,
+                        [this, pw, lbl, phl, modemBtnSS, ol, itemLabel, modeId, paramKey]() {
+                    bool open = pw->isVisible();
+                    QLayoutItem *qi; while ((qi=phl->takeAt(0))) { if(qi->widget()) qi->widget()->deleteLater(); delete qi; }
+                    pw->setVisible(!open);
+                    if (!open) {
+                        lbl->setText("— " + itemLabel + " —");
+                        for (const auto &o : ol) {
+                            QPushButton *mb = new QPushButton(o.second, pw);
+                            mb->setMinimumHeight(68); mb->setStyleSheet(modemBtnSS);
+                            QString k = o.first;
+                            connect(mb, &QPushButton::clicked, this,
+                                    [this, modeId, paramKey, k, pw]() {
+                                QJsonObject p; p[paramKey] = k;
+                                m_supervisor->startMode(modeId, p);
+                                setActiveMode(modeId, m_modeLoader->nameForId(modeId, m_language));
+                                fastPoll();
+                                pw->setVisible(false);
+                            });
+                            phl->addWidget(mb, 1);
+                        }
+                        phl->addStretch();
+                    }
+                });
+                row->addWidget(btn, 1);
+                break;
+            }
+            }
+            ++colsInRow;
+        }
+        // Fill the last row to keep card sizing consistent (matches old hardcoded `row1->addStretch(1)`)
+        if (row && colsInRow > 0 && colsInRow < CARDS_PER_ROW)
+            row->addStretch(CARDS_PER_ROW - colsInRow);
     }
 
     sl->addStretch();
@@ -1309,6 +1291,184 @@ void MainWindow::buildTouchUI()
     root->addWidget(scroll, 1);
 
     refreshOperator();
+}
+
+// ---------------------------------------------------------------------------
+// Strip UI — 80px collapsed sidebar (Desktop mode only)
+// ---------------------------------------------------------------------------
+
+void MainWindow::buildStripUI()
+{
+    clearUI();
+    setWindowOpacity(1.0);
+    setWindowFlags(Qt::Window | Qt::FramelessWindowHint);
+
+    const int STRIP_W = 80;
+    const int TILE_H  = 50;
+
+    QWidget *central = new QWidget(this);
+    central->setStyleSheet(
+        "QWidget         { background: #0d0d0d; color: #e0e0e0; }"
+        "QPushButton     { background: #1a1a1a; color: #e0e0e0; border: 1px solid #2a2a2a; border-radius: 4px; }"
+        "QPushButton:hover { background: #2a2a2a; }"
+        "QLabel#tile_label { color: #888; font-size: 9px; }"
+        "QLabel#tile_value { color: #e0e0e0; font-size: 11px; font-weight: bold; }"
+    );
+    setCentralWidget(central);
+
+    QVBoxLayout *col = new QVBoxLayout(central);
+    col->setContentsMargins(4, 4, 4, 4);
+    col->setSpacing(4);
+
+    // Helper: build a stacked tile (small label on top, big value below)
+    auto makeTile = [&](QLabel *&valueOut, const QString &labelText) {
+        QFrame *frame = new QFrame(central);
+        frame->setFixedHeight(TILE_H);
+        frame->setStyleSheet("QFrame { background: #131313; border-radius: 4px; }");
+        QVBoxLayout *vl = new QVBoxLayout(frame);
+        vl->setContentsMargins(4, 2, 4, 2);
+        vl->setSpacing(0);
+        if (!labelText.isEmpty()) {
+            QLabel *lbl = new QLabel(labelText, frame);
+            lbl->setObjectName("tile_label");
+            lbl->setAlignment(Qt::AlignCenter);
+            vl->addWidget(lbl);
+        }
+        valueOut = new QLabel(frame);
+        valueOut->setObjectName("tile_value");
+        valueOut->setAlignment(Qt::AlignCenter);
+        vl->addWidget(valueOut, 1);
+        col->addWidget(frame);
+    };
+
+    // Clock (HH:MM only — smaller font to fit at 80px)
+    makeTile(m_clockLabel, "");
+    m_clockLabel->setStyleSheet("color: #ffa500; font-size: 13px; font-weight: bold;");
+
+    // GPS state — no sub-label, the colored text already says "GPS"
+    makeTile(m_gpsLabel, "");
+
+    // Operator tile — callsign in yellow on top, grid below in dim
+    {
+        QFrame *frame = new QFrame(central);
+        frame->setFixedHeight(TILE_H);
+        frame->setStyleSheet("QFrame { background: #131313; border-radius: 4px; }");
+        QVBoxLayout *vl = new QVBoxLayout(frame);
+        vl->setContentsMargins(4, 2, 4, 2);
+        vl->setSpacing(0);
+        m_callsignLabel = new QLabel(m_userConfig->callsign(), frame);
+        m_callsignLabel->setAlignment(Qt::AlignCenter);
+        m_callsignLabel->setStyleSheet("color: #fcc419; font-size: 12px; font-weight: bold;");
+        vl->addWidget(m_callsignLabel);
+        m_gridLabel = new QLabel(m_userConfig->gridSquare(), frame);
+        m_gridLabel->setAlignment(Qt::AlignCenter);
+        m_gridLabel->setStyleSheet("color: #888; font-size: 10px;");
+        vl->addWidget(m_gridLabel);
+        col->addWidget(frame);
+    }
+
+    // Rig model tile — short form (first word, parens stripped) populated by refreshInterfaces
+    {
+        QFrame *frame = new QFrame(central);
+        frame->setFixedHeight(TILE_H - 22);  // single-line, compact
+        frame->setStyleSheet("QFrame { background: #131313; border-radius: 4px; }");
+        QVBoxLayout *vl = new QVBoxLayout(frame);
+        vl->setContentsMargins(4, 2, 4, 2);
+        vl->setSpacing(0);
+        m_radioLabel = new QLabel(frame);
+        m_radioLabel->setAlignment(Qt::AlignCenter);
+        m_radioLabel->setStyleSheet("color: #9dbfad; font-size: 11px; font-weight: bold;");
+        vl->addWidget(m_radioLabel);
+        col->addWidget(frame);
+    }
+
+    // CAT + AUDIO side-by-side — saves vertical space; refreshInterfaces
+    // will set text/colour. Strip mode uses short labels ("CAT ✓" / "AUD ✓").
+    {
+        QFrame *frame = new QFrame(central);
+        frame->setFixedHeight(TILE_H - 14);  // shorter — single-line content
+        frame->setStyleSheet("QFrame { background: #131313; border-radius: 4px; }");
+        QHBoxLayout *hl = new QHBoxLayout(frame);
+        hl->setContentsMargins(2, 0, 2, 0);
+        hl->setSpacing(2);
+        m_catLabel = new QLabel(frame);
+        m_catLabel->setAlignment(Qt::AlignCenter);
+        m_catLabel->setStyleSheet("font-size: 10px; font-weight: bold;");
+        hl->addWidget(m_catLabel, 1);
+        m_audioLabel = new QLabel(frame);
+        m_audioLabel->setAlignment(Qt::AlignCenter);
+        m_audioLabel->setStyleSheet("font-size: 10px; font-weight: bold;");
+        hl->addWidget(m_audioLabel, 1);
+        col->addWidget(frame);
+    }
+
+    // Active mode + Stop button — appears only when a mode is running
+    QFrame *modeFrame = new QFrame(central);
+    modeFrame->setFixedHeight(TILE_H + 4);
+    modeFrame->setStyleSheet("QFrame { background: #131313; border-radius: 4px; }");
+    QVBoxLayout *modeVL = new QVBoxLayout(modeFrame);
+    modeVL->setContentsMargins(4, 2, 4, 2);
+    modeVL->setSpacing(2);
+    m_activeModeLabel = new QLabel(modeFrame);
+    m_activeModeLabel->setObjectName("tile_value");
+    m_activeModeLabel->setAlignment(Qt::AlignCenter);
+    // Same green as the desktop UI's #activeModeLabel selector for consistency
+    m_activeModeLabel->setStyleSheet("color: #4ade80; font-size: 11px; font-weight: bold;");
+    m_activeModeLabel->setVisible(false);
+    modeVL->addWidget(m_activeModeLabel);
+
+    // Square stop button — width = height
+    QHBoxLayout *btnRow = new QHBoxLayout();
+    btnRow->setContentsMargins(0, 0, 0, 0);
+    m_stopBtn = new QPushButton("■", modeFrame);
+    m_stopBtn->setObjectName("stopBtn");
+    m_stopBtn->setFixedSize(26, 26);
+    m_stopBtn->setStyleSheet("background: #c92a2a; color: white; border-radius: 4px; font-weight: bold;");
+    m_stopBtn->setVisible(false);
+    connect(m_stopBtn, &QPushButton::clicked, this, &MainWindow::onStopClicked);
+    btnRow->addStretch();
+    btnRow->addWidget(m_stopBtn);
+    btnRow->addStretch();
+    modeVL->addLayout(btnRow);
+    col->addWidget(modeFrame);
+
+    // Recent modes — populated by refreshRecentModes() using m_recentStripLayout
+    {
+        QFrame *frame = new QFrame(central);
+        frame->setStyleSheet("QFrame { background: #131313; border-radius: 4px; }");
+        m_recentStripLayout = new QVBoxLayout(frame);
+        m_recentStripLayout->setContentsMargins(4, 6, 4, 6);
+        m_recentStripLayout->setSpacing(6);  // breathing room between square buttons
+        col->addWidget(frame);
+    }
+
+    col->addStretch();
+
+    // Expand button at bottom
+    QPushButton *expandBtn = new QPushButton("⮜", central);
+    expandBtn->setFixedHeight(32);
+    expandBtn->setStyleSheet("background: #1f4432; color: #7de8b0; border: 1px solid #2a5a3a; border-radius: 4px; font-size: 16px; font-weight: bold;");
+    expandBtn->setToolTip("Expand dashboard");
+    connect(expandBtn, &QPushButton::clicked, this, [this]() { setStripMode(false); });
+    col->addWidget(expandBtn);
+
+    // Snap to right edge at strip width
+    QRect geo = QApplication::primaryScreen()->availableGeometry();
+    setFixedSize(STRIP_W, geo.height());
+    move(geo.right() - STRIP_W + 1, geo.top());
+    show();
+
+    // Trigger initial population of dynamic fields
+    updateClock();
+    refreshInterfaces();
+    refreshRecentModes();
+    if (!m_activeMode.isEmpty()) {
+        QString fallback = m_activeModeName.split(' ').first().toUpper();
+        m_activeModeLabel->setText(
+            m_menu ? m_menu->stripLabelFor(m_activeMode, fallback) : fallback);
+        m_activeModeLabel->setVisible(true);
+        m_stopBtn->setVisible(true);
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -1469,6 +1629,12 @@ bool MainWindow::eventFilter(QObject *obj, QEvent *event)
                 toggleIfaceEditor();
                 return true;
             }
+            // Strip-mode recent-mode card click → launch the mode
+            QString recentId = w->property("liaisonos_mode_id").toString();
+            if (!recentId.isEmpty()) {
+                onModeButtonClicked(recentId);
+                return true;
+            }
         }
     }
     return QMainWindow::eventFilter(obj, event);
@@ -1480,6 +1646,9 @@ bool MainWindow::eventFilter(QObject *obj, QEvent *event)
 
 void MainWindow::onTouchModeChanged(bool enabled)
 {
+    // Strip mode is a Desktop sub-mode; entering Touch mode clears it so
+    // that toggling Touch off later returns to full Desktop, not Strip.
+    m_stripMode = false;
     if (enabled) buildTouchUI();
     else         buildDesktopUI();
 }
@@ -1620,8 +1789,55 @@ void MainWindow::onScreenGeometryChanged()
 {
     if (m_userConfig->touchMode())
         buildTouchUI();
+    else if (m_stripMode)
+        buildStripUI();
     else
         buildDesktopUI();
+}
+
+void MainWindow::onMenuChanged()
+{
+    // The dashboard-menu JSON (system default or user overrides) changed on
+    // disk; rebuild the UI so the new menu structure is reflected. Reuses
+    // the same full-rebuild path as a touch-mode toggle.
+    if (m_userConfig->touchMode())
+        buildTouchUI();
+    else if (m_stripMode)
+        buildStripUI();
+    else
+        buildDesktopUI();
+}
+
+void MainWindow::setStripMode(bool enabled)
+{
+    // No-op in touch mode (touch has its own fullscreen layout)
+    if (m_userConfig->touchMode()) return;
+    if (m_stripMode == enabled) return;
+    m_stripMode = enabled;
+
+    const int DESKTOP_W = 380;
+    const int STRIP_W   = 80;
+    const int targetW   = enabled ? STRIP_W : DESKTOP_W;
+    const QRect geo     = QApplication::primaryScreen()->availableGeometry();
+
+    QRect endRect(geo.right() - targetW + 1, geo.top(), targetW, geo.height());
+
+    // Animate window width — right-anchored, so the LEFT edge moves while
+    // the right edge stays put. 250ms InOutCubic per design.
+    QPropertyAnimation *a = new QPropertyAnimation(this, "geometry", this);
+    a->setDuration(250);
+    a->setEasingCurve(QEasingCurve::InOutCubic);
+    a->setStartValue(geometry());
+    a->setEndValue(endRect);
+
+    // Rebuild only AFTER the animation finishes, so the user sees a smooth
+    // width shrink/grow of the OLD widget tree, then a clean swap to the
+    // new tree once the target geometry is reached.
+    connect(a, &QAbstractAnimation::finished, this, [this, enabled]() {
+        if (enabled) buildStripUI();
+        else         buildDesktopUI();
+    });
+    a->start(QAbstractAnimation::DeleteWhenStopped);
 }
 
 // ---------------------------------------------------------------------------
@@ -1649,7 +1865,19 @@ void MainWindow::setActiveMode(const QString &modeId, const QString &modeName)
 
     bool active = !modeId.isEmpty();
     if (m_activeModeLabel) {
-        m_activeModeLabel->setText(active ? "● " + m_activeModeName : "");
+        QString display;
+        if (active) {
+            if (m_stripMode) {
+                // Strip mode: prefer dashboard-menu.json's label_touch; fall back
+                // to first word of label (or m_activeModeName if mode isn't in the
+                // menu at all). Group name is never prefixed.
+                QString fallback = m_activeModeName.split(' ').first().toUpper();
+                display = m_menu ? m_menu->stripLabelFor(modeId, fallback) : fallback;
+            } else {
+                display = "● " + m_activeModeName;
+            }
+        }
+        m_activeModeLabel->setText(display);
         m_activeModeLabel->setVisible(active);
     }
     if (m_stopBtn)
@@ -1660,6 +1888,12 @@ void MainWindow::setActiveMode(const QString &modeId, const QString &modeName)
         QWidget *modeBar = centralWidget()->property("touchModeBar").value<QWidget*>();
         if (modeBar) modeBar->setVisible(active);
     }
+
+    // Refresh recent buttons so their "active" highlight tracks the current
+    // mode. Recent buttons live in their own layouts (desktop / touch / strip)
+    // and aren't part of m_modeButtons, so they don't get the polish() above —
+    // a fresh rebuild is the simplest way to keep their visual state in sync.
+    refreshRecentModes();
 }
 
 // ---------------------------------------------------------------------------
@@ -1668,8 +1902,13 @@ void MainWindow::setActiveMode(const QString &modeId, const QString &modeName)
 
 void MainWindow::updateClock()
 {
-    if (m_clockLabel)
+    if (!m_clockLabel) return;
+    if (m_stripMode) {
+        // Strip mode: HH:MM only, no UTC prefix — saves horizontal space
+        m_clockLabel->setText(QDateTime::currentDateTimeUtc().toString("HH:mm"));
+    } else {
         m_clockLabel->setText("UTC " + QDateTime::currentDateTimeUtc().toString("HH:mm:ss"));
+    }
 }
 
 void MainWindow::startClockTimer()
@@ -1700,25 +1939,44 @@ void MainWindow::onGpsNotify()
                 QString grid = obj.value("grid").toString();
                 double  lat  = obj.value("lat").toDouble();
                 double  lon  = obj.value("lon").toDouble();
-                m_userConfig->updateGpsPosition(grid, lat, lon);
                 m_gpsActive = true;
+                m_userConfig->updateGpsPosition(grid, lat, lon);
                 if (m_gridLabel) {
                     m_gridLabel->setText(grid);
                     m_gridLabel->setStyleSheet("font-size: 12px; font-weight: bold; color: #4ade80;");
                 }
+                refreshInterfaces();   // flip GPS dot to green now, not at next poll tick
                 return;
             }
         }
 
-        // Plain text messages
+        // Plain text messages from GpsMonitor (continuous-mode lifecycle):
+        //   gps:start    — gpsd just came up
+        //   gps:running  — periodic pulse, fix is active
+        //   gps:warn     — periodic pulse, fix LOST (signal dropped)
+        //   gps:stop     — gpsd shutting down
+        //   gps:closed   — socket / connection closed
+        // The JSON-with-grid path above only fires on the one-shot Sync flow.
         QString msg = QString::fromUtf8(data).trimmed();
-        if (msg == "gps:closed") {
+        if (msg == "gps:start" || msg == "gps:running") {
+            if (!m_gpsActive) {
+                m_gpsActive = true;
+                refreshInterfaces();   // → GREEN
+            }
+        } else if (msg == "gps:warn") {
+            // Signal lost while gpsd is still up — flip to yellow
+            if (m_gpsActive) {
+                m_gpsActive = false;
+                refreshInterfaces();   // → YELLOW
+            }
+        } else if (msg == "gps:closed" || msg == "gps:stop") {
             m_gpsActive = false;
             if (m_gridLabel) {
                 m_gridLabel->setStyleSheet(m_userConfig->tracking()
                     ? "font-size: 12px; font-weight: bold; color: #4ade80;"
                     : "font-size: 12px; color: #9e9e9e;");
             }
+            refreshInterfaces();   // → YELLOW (or RED if device also gone)
         }
     }
 }
@@ -1773,6 +2031,77 @@ void MainWindow::refreshRecentModes()
         }
     }
 
+    // Strip
+    if (m_recentStripLayout) {
+        QLayoutItem *item;
+        while ((item = m_recentStripLayout->takeAt(0))) {
+            if (item->widget()) item->widget()->deleteLater();
+            delete item;
+        }
+        // Cap at 6 — matches the normal (desktop) Recent section count
+        int shown = 0;
+        for (const QString &rid : recents) {
+            if (shown >= 6) break;
+            QString baseId = rid;
+            QString modem;
+            int sep = rid.indexOf(':');
+            if (sep >= 0) { baseId = rid.left(sep); modem = rid.mid(sep + 1); }
+
+            // stripLabelFor handles the abbr-or-truncate logic; we just use its result.
+            QString fallback = m_modeLoader->nameForId(baseId, m_language).toUpper();
+            QString tag = m_menu ? m_menu->stripLabelFor(baseId, fallback) : fallback;
+            if (tag.isEmpty()) continue;
+
+            QString icon = m_menu ? m_menu->stripIconFor(baseId) : QString();
+
+            // Use a QFrame with stacked QLabels — lets us size the icon big
+            // and the text small on the same "button" (QPushButton text uses
+            // a single font size for all lines, which doesn't suit icon+label).
+            QFrame *card = new QFrame();
+            card->setFixedSize(60, 60);
+            card->setCursor(Qt::PointingHandCursor);
+            const bool isActive = (m_activeMode == baseId);
+            card->setProperty("active", isActive);
+            card->setStyleSheet(
+                "QFrame { background: #1a1a1a; border: 1px solid #2a2a2a; border-radius: 6px; }"
+                "QFrame[active=\"true\"] { background: #1a3a1a; border: 1px solid #4ade80; }"
+            );
+
+            QVBoxLayout *cl = new QVBoxLayout(card);
+            cl->setContentsMargins(2, 2, 2, 2);
+            cl->setSpacing(0);
+
+            if (!icon.isEmpty()) {
+                QLabel *iconLbl = new QLabel(icon, card);
+                iconLbl->setAlignment(Qt::AlignCenter);
+                iconLbl->setStyleSheet("background: transparent; border: none; font-size: 22px;");
+                cl->addWidget(iconLbl, 2);
+            }
+
+            // Bottom label — show short tag, plus modem suffix (truncated) for param modes
+            QString text = tag;
+            if (!modem.isEmpty()) {
+                QString mt = modem.toUpper();
+                mt.remove(' ').remove('-');
+                text += " " + mt.left(4);
+            }
+            QLabel *txtLbl = new QLabel(text, card);
+            txtLbl->setAlignment(Qt::AlignCenter);
+            txtLbl->setStyleSheet(QString(
+                "background: transparent; border: none; font-size: 10px; font-weight: bold;"
+                "color: %1;").arg(isActive ? "#4ade80" : "#e0e0e0"));
+            cl->addWidget(txtLbl, 1);
+
+            // Click handling — install an event filter on the frame to trigger
+            // the existing mode-launch path
+            card->installEventFilter(this);
+            card->setProperty("liaisonos_mode_id", rid);
+
+            m_recentStripLayout->addWidget(card, 0, Qt::AlignHCenter);
+            ++shown;
+        }
+    }
+
     // Touch
     if (m_recentTouchLayout) {
         QLayoutItem *item;
@@ -1818,7 +2147,7 @@ void MainWindow::toggleOperatorEditor()
         m_editCallsign->setText(m_userConfig->callsign());
         m_editGrid->setText(m_userConfig->gridSquare());
 
-        QFile f(QDir::homePath() + "/.config/emcomm-tools/user.json");
+        QFile f(QDir::homePath() + "/.config/liaisonos/user.json");
         if (f.open(QIODevice::ReadOnly)) {
             QJsonObject obj = QJsonDocument::fromJson(f.readAll()).object();
             f.close();
@@ -1847,7 +2176,7 @@ void MainWindow::saveOperator()
     }
 
     // Read, update, write user.json
-    QString configPath = QDir::homePath() + "/.config/emcomm-tools/user.json";
+    QString configPath = QDir::homePath() + "/.config/liaisonos/user.json";
     QFile f(configPath);
     QJsonObject obj;
     if (f.open(QIODevice::ReadOnly)) {
@@ -1879,15 +2208,27 @@ void MainWindow::refreshInterfaces()
 {
     if (m_gpsLabel) {
         bool gpsOk = QFile::exists("/dev/et-gps");
-        m_gpsLabel->setText(gpsOk ? "GPS: ✓" : "GPS: ✗");
-        m_gpsLabel->setStyleSheet(gpsOk ? "color: #4ade80;" : "color: #cc0000;");
+        // Three-state GPS — based on fix activity, not the Track toggle:
+        //   red    — no GPS source (/dev/et-gps missing)
+        //   yellow — GPS source exists but no fix yet (waiting / stale)
+        //   green  — GPS source exists AND receiving fixes (m_gpsActive)
+        QString color, mark;
+        if (!gpsOk) {
+            color = "#cc0000"; mark = "✗";
+        } else if (m_gpsActive) {
+            color = "#4ade80"; mark = "✓";   // fix active
+        } else {
+            color = "#fcc419"; mark = "●";   // gps available, no fix yet
+        }
+        m_gpsLabel->setText("GPS: " + mark);
+        m_gpsLabel->setStyleSheet("color: " + color + ";");
         if (m_trackBtn)
             m_trackBtn->setEnabled(gpsOk);
     }
 
-    if (!m_radioLabel)
-        return;
-
+    // Radio config drives CAT logic (rigId == 1 means no rig control).
+    // Load it even in Strip mode, where m_radioLabel doesn't exist, so we
+    // can still compute CAT N/A vs ✓/✗ correctly for the CAT tile.
     const QString ACTIVE_RADIO = "/opt/emcomm-tools/conf/radios.d/active-radio.json";
     QString radioName = "Not configured";
     int rigId = -1;
@@ -1902,28 +2243,42 @@ void MainWindow::refreshInterfaces()
             rigId = doc.object().value("rigctrl").toObject().value("id").toInt(-1);
         }
     }
-    m_radioLabel->setText("Radio: " + radioName);
+    if (m_radioLabel) {
+        if (m_stripMode) {
+            // Strip mode: drop the parenthetical (e.g. "FT-897D (Digirig)" → "FT-897D")
+            // so the model fits in the 80px column.
+            QString shortName = radioName;
+            int paren = shortName.indexOf('(');
+            if (paren > 0) shortName = shortName.left(paren).trimmed();
+            m_radioLabel->setText(shortName);
+        } else {
+            m_radioLabel->setText("Radio: " + radioName);
+        }
+    }
 
     if (!m_catLabel || !m_audioLabel)
         return;
 
+    // Strip mode uses shorter text + preserves the compact font we set in buildStripUI
+    const QString stripFont = m_stripMode ? " font-size: 10px; font-weight: bold;" : "";
+
     if (!radioFileExists || rigId == 1) {
-        m_catLabel->setText("CAT: N/A");
-        m_catLabel->setStyleSheet("color: #666666;");
+        m_catLabel->setText(m_stripMode ? "CAT —" : "CAT: N/A");
+        m_catLabel->setStyleSheet(QString("color: #666666;%1").arg(stripFont));
     } else if (QFile::exists("/dev/et-cat")) {
-        m_catLabel->setText("CAT: ✓");
-        m_catLabel->setStyleSheet("color: #4ade80;");
+        m_catLabel->setText(m_stripMode ? "CAT ✓" : "CAT: ✓");
+        m_catLabel->setStyleSheet(QString("color: #4ade80;%1").arg(stripFont));
     } else {
-        m_catLabel->setText("CAT: ✗");
-        m_catLabel->setStyleSheet("color: #cc0000;");
+        m_catLabel->setText(m_stripMode ? "CAT ✗" : "CAT: ✗");
+        m_catLabel->setStyleSheet(QString("color: #cc0000;%1").arg(stripFont));
     }
 
     if (QFile::exists("/dev/et-audio")) {
-        m_audioLabel->setText("Audio: ✓");
-        m_audioLabel->setStyleSheet("color: #4ade80;");
+        m_audioLabel->setText(m_stripMode ? "AUD ✓" : "Audio: ✓");
+        m_audioLabel->setStyleSheet(QString("color: #4ade80;%1").arg(stripFont));
     } else {
-        m_audioLabel->setText("Audio: ✗");
-        m_audioLabel->setStyleSheet("color: #cc0000;");
+        m_audioLabel->setText(m_stripMode ? "AUD ✗" : "Audio: ✗");
+        m_audioLabel->setStyleSheet(QString("color: #cc0000;%1").arg(stripFont));
     }
 
     // TNC / VARA / Mercury IP:PORT label — shown only for relevant active modes
