@@ -7,6 +7,7 @@
 #include "UserConfig.h"
 #include <QDebug>
 #include <QFile>
+#include <QFileInfo>
 #include <QJsonDocument>
 #include <QJsonArray>
 #include <QDir>
@@ -18,10 +19,21 @@ UserConfig::UserConfig(QObject *parent)
 
     connect(&m_watcher, &QFileSystemWatcher::fileChanged,
             this, &UserConfig::onFileChanged);
+    connect(&m_watcher, &QFileSystemWatcher::directoryChanged,
+            this, &UserConfig::onDirChanged);
+
+    // Watch the parent directory too. QFileSystemWatcher::addPath(file) fails
+    // silently if the file doesn't exist yet (first-boot before any save) —
+    // watching the dir catches the file's CREATION event so we can reload as
+    // soon as et-firstboot / et-persistence-restore drops user.json in place.
+    const QString dir = QFileInfo(m_path).absolutePath();
+    QDir().mkpath(dir);
+    m_watcher.addPath(dir);
 
     load();
     m_lastGrid = m_gridSquare;
-    m_watcher.addPath(m_path);
+    if (QFile::exists(m_path))
+        m_watcher.addPath(m_path);
 }
 
 void UserConfig::load()
@@ -139,10 +151,28 @@ void UserConfig::onFileChanged(const QString &path)
     load();
     m_lastGrid = m_gridSquare;
     // Re-add path — some editors replace the file (inotify loses track)
-    m_watcher.addPath(m_path);
+    if (QFile::exists(m_path) && !m_watcher.files().contains(m_path))
+        m_watcher.addPath(m_path);
     emit configChanged();
     if (m_touchMode != prevTouch)
         emit touchModeChanged(m_touchMode);
+}
+
+void UserConfig::onDirChanged(const QString &dir)
+{
+    Q_UNUSED(dir)
+    // Triggered when files appear/disappear/get renamed in the parent dir.
+    // If user.json just appeared (or was atomic-renamed in by a restore),
+    // add it to the watcher and reload immediately.
+    if (QFile::exists(m_path) && !m_watcher.files().contains(m_path)) {
+        m_watcher.addPath(m_path);
+        bool prevTouch = m_touchMode;
+        load();
+        m_lastGrid = m_gridSquare;
+        emit configChanged();
+        if (m_touchMode != prevTouch)
+            emit touchModeChanged(m_touchMode);
+    }
 }
 
 void UserConfig::onPollTimer()

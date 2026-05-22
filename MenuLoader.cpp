@@ -355,33 +355,59 @@ QList<MenuLoader::Group> MenuLoader::applyOverrides(QList<Group> sys,
     for (const QJsonValue &v : ov.value("hide_groups").toArray())
         hideGroups.insert(v.toString());
 
-    // relabel
+    // relabel — overrides "label" on Mode / Param / multi-child by id.
     QHash<QString, QString> relabel;
     const QJsonObject rl = ov.value("relabel").toObject();
     for (auto it = rl.constBegin(); it != rl.constEnd(); ++it)
         relabel.insert(it.key(), it.value().toString());
+
+    // relabel_touch — overrides "labelTouch" on Mode / Param / multi-child by id.
+    QHash<QString, QString> relabelTouch;
+    const QJsonObject rlt = ov.value("relabel_touch").toObject();
+    for (auto it = rlt.constBegin(); it != rlt.constEnd(); ++it)
+        relabelTouch.insert(it.key(), it.value().toString());
+
+    // relabel_groups — overrides group title (replaces BOTH titleEn AND titleFr
+    // with the same string, regardless of active UI language).
+    QHash<QString, QString> relabelGroups;
+    const QJsonObject rlg = ov.value("relabel_groups").toObject();
+    for (auto it = rlg.constBegin(); it != rlg.constEnd(); ++it)
+        relabelGroups.insert(it.key(), it.value().toString());
 
     // Walk system groups, hide / relabel
     QList<Group> out;
     for (Group g : sys) {
         if (hideGroups.contains(g.id)) continue;
 
+        // Group title override
+        if (relabelGroups.contains(g.id)) {
+            const QString nt = relabelGroups.value(g.id);
+            g.titleEn = nt;
+            g.titleFr = nt;
+        }
+
         QList<Item> kept;
         for (Item it : g.items) {
-            // Drop "mode" items hidden by id
-            if (it.type == ItemType::Mode && hideModes.contains(it.id))
+            // Drop "mode" or "param" items hidden by id. From the operator's
+            // perspective they're all mode-apps the dashboard launches, so we
+            // treat them uniformly against the hide_modes set.
+            if ((it.type == ItemType::Mode || it.type == ItemType::Param)
+                    && hideModes.contains(it.id))
                 continue;
 
-            // Relabel "mode" items
-            if (it.type == ItemType::Mode && relabel.contains(it.id))
-                it.label = relabel.value(it.id);
+            // Relabel "mode" / "param" items — desktop label + touch label.
+            if (it.type == ItemType::Mode || it.type == ItemType::Param) {
+                if (relabel.contains(it.id))      it.label      = relabel.value(it.id);
+                if (relabelTouch.contains(it.id)) it.labelTouch = relabelTouch.value(it.id);
+            }
 
-            // Drop hidden mode refs inside "multi"
+            // Drop hidden mode refs inside "multi"; also relabel children.
             if (it.type == ItemType::Multi) {
                 QList<ModeRef> kr;
                 for (ModeRef m : it.modes) {
                     if (hideModes.contains(m.id)) continue;
-                    if (relabel.contains(m.id)) m.label = relabel.value(m.id);
+                    if (relabel.contains(m.id))      m.label      = relabel.value(m.id);
+                    if (relabelTouch.contains(m.id)) m.labelTouch = relabelTouch.value(m.id);
                     kr.append(m);
                 }
                 it.modes = kr;

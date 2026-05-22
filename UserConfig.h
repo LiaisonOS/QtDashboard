@@ -40,6 +40,7 @@ signals:
 
 private slots:
     void onFileChanged(const QString &path);
+    void onDirChanged(const QString &dir);
     void onPollTimer();
 
 private:
