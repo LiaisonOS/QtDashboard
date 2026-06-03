@@ -219,6 +219,66 @@ QString MenuLoader::stripLabelFor(const QString &modeId, const QString &fallback
     return fallback;
 }
 
+QString MenuLoader::menuLabelFor(const QString &modeId,
+                                  const QString &fallback,
+                                  bool touchMode) const
+{
+    auto pick = [touchMode, &fallback](const QString &label,
+                                        const QString &labelTouch) -> QString {
+        if (touchMode && !labelTouch.isEmpty()) return labelTouch;
+        if (!label.isEmpty())                   return label;
+        return fallback;
+    };
+    for (const Group &g : m_merged) {
+        for (const Item &it : g.items) {
+            if ((it.type == ItemType::Mode || it.type == ItemType::Param)
+                    && it.id == modeId) {
+                return pick(it.label, it.labelTouch);
+            }
+            if (it.type == ItemType::Multi) {
+                for (const ModeRef &m : it.modes) {
+                    if (m.id == modeId) return pick(m.label, m.labelTouch);
+                }
+            }
+        }
+    }
+    return fallback;
+}
+
+QString MenuLoader::multiParentLabelFor(const QString &modeId,
+                                         bool touchMode) const
+{
+    for (const Group &g : m_merged) {
+        for (const Item &it : g.items) {
+            if (it.type != ItemType::Multi) continue;
+            for (const ModeRef &m : it.modes) {
+                if (m.id == modeId) {
+                    if (touchMode && !it.labelTouch.isEmpty()) return it.labelTouch;
+                    return it.label;
+                }
+            }
+        }
+    }
+    return QString();
+}
+
+QString MenuLoader::modemLabelFor(const QString &modeId,
+                                   const QString &modemValue,
+                                   const QString &fallback) const
+{
+    for (const Group &g : m_merged) {
+        for (const Item &it : g.items) {
+            if (it.type != ItemType::Param || it.id != modeId) continue;
+            for (const ParamOption &opt : it.options) {
+                if (opt.value == modemValue) {
+                    return opt.label.isEmpty() ? fallback : opt.label;
+                }
+            }
+        }
+    }
+    return fallback;
+}
+
 // ---------------------------------------------------------------------------
 // Parsing
 // ---------------------------------------------------------------------------
@@ -273,9 +333,10 @@ MenuLoader::Item MenuLoader::parseItem(const QJsonObject &o)
 {
     Item it;
     const QString t = o.value("type").toString();
-    if      (t == "mode")  it.type = ItemType::Mode;
-    else if (t == "multi") it.type = ItemType::Multi;
-    else if (t == "param") it.type = ItemType::Param;
+    if      (t == "mode")   it.type = ItemType::Mode;
+    else if (t == "multi")  it.type = ItemType::Multi;
+    else if (t == "param")  it.type = ItemType::Param;
+    else if (t == "toggle") it.type = ItemType::Toggle;
     else {
         qWarning() << "MenuLoader: unknown item type" << t;
         it.type = ItemType::Mode;
@@ -287,6 +348,9 @@ MenuLoader::Item MenuLoader::parseItem(const QJsonObject &o)
     it.labelAbbr  = o.value("label_abbr").toString();
     it.stripIcon  = o.value("strip_icon").toString();
     it.paramKey   = o.value("param_key").toString();
+    it.stateFile  = o.value("state_file").toString();
+    if (o.contains("off_when_file_exists"))
+        it.offWhenFileExists = o.value("off_when_file_exists").toBool();
 
     for (const QJsonValue &v : o.value("modes").toArray()) {
         if (!v.isObject()) continue;

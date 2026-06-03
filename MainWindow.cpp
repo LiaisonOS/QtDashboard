@@ -24,6 +24,9 @@
 #include <QProcess>
 #include <QFile>
 #include <QDir>
+#include <QFileInfo>
+#include <QFileSystemWatcher>
+#include <QStandardPaths>
 #include <QDebug>
 #include <QFileInfo>
 #include <QMessageBox>
@@ -199,6 +202,11 @@ static QFrame* makeSep(QWidget *parent)
 void MainWindow::clearUI()
 {
     m_modeButtons.clear();
+    // Toggle buttons get destroyed by Qt when their parent (sc / cw) is
+    // wiped on UI rebuild — clear the map so stale pointers don't survive
+    // into the next render. The watcher stays — it's owned by `this` and
+    // re-attaches to any state file paths on the next makeToggleBtn call.
+    m_toggleButtons.clear();
     m_clockLabel      = nullptr;
     m_gpsLabel        = nullptr;
     m_trackBtn        = nullptr;
@@ -616,14 +624,15 @@ void MainWindow::buildDesktopUI()
             QString mlbl = m.second;
             QPushButton *mb = new QPushButton(mlbl, modemWidget);
             mb->setObjectName("modemBtn");
-            connect(mb, &QPushButton::clicked, this, [this, modeId, key, mlbl, modemWidget]() {
+            connect(mb, &QPushButton::clicked, this, [this, modeId, key, mlbl, label, modemWidget]() {
                 modemWidget->setVisible(false);
+                if (!canStartNewMode()) return;
                 QJsonObject params;
                 params["modem"] = key;
                 m_supervisor->startMode(modeId, params);
                 m_userConfig->addToRecent(modeId + ":" + key);
                 refreshRecentModes();
-                setActiveMode(modeId, m_modeLoader->nameForId(modeId, m_language) + " (" + mlbl + ")");
+                setActiveMode(modeId, label + " - " + mlbl, key);
                 fastPoll();
             });
             mg->addWidget(mb, row, col++);
@@ -644,6 +653,23 @@ void MainWindow::buildDesktopUI()
         recentTitle->setObjectName("sectionTitle");
         recentTitle->setContentsMargins(8, 6, 0, 2);
         sl->addWidget(recentTitle);
+
+        // Inline toast — shown briefly for soft errors (e.g. duplicate launch).
+        m_recentToast = new QLabel("", sc);
+        m_recentToast->setObjectName("recentToast");
+        m_recentToast->setVisible(false);
+        m_recentToast->setAlignment(Qt::AlignCenter);
+        m_recentToast->setWordWrap(true);
+        m_recentToast->setStyleSheet(
+            "background: rgba(255,165,0,0.15);"
+            "color: #ffa500;"
+            "border: 1px solid rgba(255,165,0,0.4);"
+            "border-radius: 4px;"
+            "padding: 5px 10px;"
+            "font-size: 11px;"
+            "font-weight: 600;"
+            "margin: 4px 6px;");
+        sl->addWidget(m_recentToast);
 
         QWidget *recentBox = new QWidget(sc);
         m_recentLayout = new QVBoxLayout(recentBox);
@@ -679,6 +705,11 @@ void MainWindow::buildDesktopUI()
                     opts.append({o.value, MenuLoader::labelFor(o.label, o.labelTouch, false)});
                 }
                 addParamMode(cl, it.id, label, opts);
+                break;
+            }
+            case MenuLoader::ItemType::Toggle: {
+                QPushButton *tb = makeToggleBtn(it, sc, /*touch*/ false);
+                cl->addWidget(tb);
                 break;
             }
             }
@@ -1165,6 +1196,24 @@ void MainWindow::buildTouchUI()
     {
         QVBoxLayout *cl = addTouchSection((m_language == "fr" ? "⭐ RÉCENTS" : "⭐ RECENT"), true);
         QWidget *cw = qobject_cast<QWidget*>(cl->parent());
+
+        // Inline toast above the row of recent cards.
+        m_recentToastTouch = new QLabel("", cw);
+        m_recentToastTouch->setObjectName("recentToastTouch");
+        m_recentToastTouch->setVisible(false);
+        m_recentToastTouch->setAlignment(Qt::AlignCenter);
+        m_recentToastTouch->setWordWrap(true);
+        m_recentToastTouch->setStyleSheet(
+            "background: rgba(255,165,0,0.15);"
+            "color: #ffa500;"
+            "border: 1px solid rgba(255,165,0,0.4);"
+            "border-radius: 4px;"
+            "padding: 8px 12px;"
+            "font-size: 14px;"
+            "font-weight: 600;"
+            "margin: 2px 6px;");
+        cl->addWidget(m_recentToastTouch);
+
         QHBoxLayout *row = makeRow(cl, cw);
         m_recentTouchLayout = new QHBoxLayout();
         m_recentTouchLayout->setSpacing(8);
@@ -1264,11 +1313,12 @@ void MainWindow::buildTouchUI()
                             QString k = o.first;
                             connect(mb, &QPushButton::clicked, this,
                                     [this, modeId, paramKey, k, pw]() {
+                                pw->setVisible(false);
+                                if (!canStartNewMode()) return;
                                 QJsonObject p; p[paramKey] = k;
                                 m_supervisor->startMode(modeId, p);
-                                setActiveMode(modeId, m_modeLoader->nameForId(modeId, m_language));
+                                setActiveMode(modeId, m_modeLoader->nameForId(modeId, m_language), k);
                                 fastPoll();
-                                pw->setVisible(false);
                             });
                             phl->addWidget(mb, 1);
                         }
@@ -1276,6 +1326,12 @@ void MainWindow::buildTouchUI()
                     }
                 });
                 row->addWidget(btn, 1);
+                break;
+            }
+            case MenuLoader::ItemType::Toggle: {
+                QPushButton *tb = makeToggleBtn(it, cw, /*touch*/ true);
+                tb->setMinimumHeight(80);
+                row->addWidget(tb, 1);
                 break;
             }
             }
@@ -1543,6 +1599,18 @@ void MainWindow::applyRadio()
         QFile::link(target, linkPath);
     }
 
+    // Restart rigctld so it re-reads active-radio.json and starts in the
+    // right mode for the selected radio (Dummy for cat:false radios, full
+    // CAT otherwise). Without this, the user has to unplug/replug the USB
+    // to get rigctld to pick up the new config — easy to forget and the
+    // next mode start fails with a cryptic "Rig Control Error" from the
+    // app (rigctld is still pinned to the previous radio's serial port).
+    // sudoers already permits this command without password.
+    if (!radioId.isEmpty()) {
+        QProcess::startDetached("sudo",
+            {"systemctl", "restart", "rigctld"});
+    }
+
     // Build config notes for dialog + document
     QString notes = m_radioCombo->currentData(Qt::UserRole + 1).toString();
     QString label = m_radioCombo->currentText();
@@ -1660,6 +1728,13 @@ void MainWindow::onToggleTouchMode()
 
 void MainWindow::onModeButtonClicked(const QString &modeId)
 {
+    // Guard FIRST — if another mode is running, abort. Operator must
+    // explicitly Stop or close the running mode before launching another.
+    // Prevents the chained side effects (Recent reorder, fake highlight on
+    // the new button) that used to happen when supervisor rejected the
+    // duplicate launch downstream.
+    if (!canStartNewMode()) return;
+
     // modeId may be a composite "id:modem" stored by addParamMode
     QString baseId = modeId;
     QString modem;
@@ -1672,14 +1747,27 @@ void MainWindow::onModeButtonClicked(const QString &modeId)
     m_userConfig->addToRecent(modeId);
     refreshRecentModes();
 
+    // Compose the active-mode display name from menu labels, in the same
+    // shape as the Recent buttons so the header and Recent match.
+    auto composeDisplay = [&](const QString &id, const QString &modem) {
+        QString lbl = m_menu ? m_menu->menuLabelFor(id, id, false) : id;
+        QString parent = m_menu ? m_menu->multiParentLabelFor(id, false) : QString();
+        if (!parent.isEmpty()) lbl = parent + " - " + lbl;
+        if (!modem.isEmpty()) {
+            QString modemLbl = m_menu ? m_menu->modemLabelFor(id, modem, modem) : modem;
+            lbl += " - " + modemLbl;
+        }
+        return lbl;
+    };
+
     if (!modem.isEmpty()) {
         QJsonObject params;
         params["modem"] = modem;
         m_supervisor->startMode(baseId, params);
-        setActiveMode(baseId, m_modeLoader->nameForId(baseId, m_language) + " (" + modem + ")");
+        setActiveMode(baseId, composeDisplay(baseId, modem), modem);
     } else {
         m_supervisor->startMode(baseId);
-        setActiveMode(baseId, m_modeLoader->nameForId(baseId, m_language));
+        setActiveMode(baseId, composeDisplay(baseId, QString()), QString());
     }
     fastPoll();
 }
@@ -1717,10 +1805,13 @@ void MainWindow::onStatusReceived(const QJsonObject &status)
         if (msg.isEmpty())
             msg = (m_language == "fr") ? "et-supervisor n'est pas en cours."
                                        : "et-supervisor is not running.";
-        QString title = (m_language == "fr") ? "Erreur du superviseur"
-                                             : "Supervisor Error";
-        setActiveMode(QString());
-        QMessageBox::critical(this, title, msg);
+        // Don't clear the active mode: statusReceived fires for command
+        // responses too, and an error here (e.g. duplicate launch) doesn't
+        // mean the running mode stopped.
+        // Inline toast above Recent — replaces the modal alert box; the
+        // operator gets a brief, glanceable warning instead of a blocking
+        // dialog they have to dismiss.
+        showRecentToast(msg);
         return;
     }
 
@@ -1844,9 +1935,71 @@ void MainWindow::setStripMode(bool enabled)
 // setActiveMode
 // ---------------------------------------------------------------------------
 
-void MainWindow::setActiveMode(const QString &modeId, const QString &modeName)
+// ---------------------------------------------------------------------------
+// canStartNewMode
+// ---------------------------------------------------------------------------
+//
+// Pre-launch guard. Returns true if no mode is currently active. If a mode
+// IS active, shows the inline Recent toast and returns false — caller must
+// abort. Operator clears the active mode by pressing Stop or by closing the
+// mode's own application window (supervisor reports back, m_activeMode clears).
+//
+bool MainWindow::canStartNewMode()
 {
-    if (m_activeMode == modeId && m_activeModeName == modeName)
+    if (m_activeMode.isEmpty()) return true;
+
+    QString currentName = m_activeModeName.isEmpty() ? m_activeMode : m_activeModeName;
+    QString msg = (m_language == "fr")
+            ? "Mode actif : " + currentName + " — arrêtez-le d'abord (Stop)."
+            : "Mode active: "  + currentName + " — stop it first (Stop button).";
+    showRecentToast(msg);
+    return false;
+}
+
+// ---------------------------------------------------------------------------
+// showRecentToast
+// ---------------------------------------------------------------------------
+//
+// Brief inline warning above the Recent section. Used for soft errors
+// (e.g. "mode already running") that don't justify a modal box.
+//
+void MainWindow::showRecentToast(const QString &msg, int durationMs)
+{
+    auto show = [msg, durationMs](QLabel *lbl) {
+        if (!lbl) return;
+        lbl->setText(msg);
+        lbl->setVisible(true);
+        QTimer::singleShot(durationMs, lbl, [lbl]() {
+            if (lbl) lbl->setVisible(false);
+        });
+    };
+    show(m_recentToast);
+    show(m_recentToastTouch);
+}
+
+// ---------------------------------------------------------------------------
+
+void MainWindow::setActiveMode(const QString &modeId, const QString &modeName,
+                               const QString &modem)
+{
+    // Modem tracking rule:
+    //   - empty modeId            → clear modem (stop)
+    //   - different base id       → adopt incoming modem (may be "")
+    //   - same base id + non-empty modem → update (re-launch w/ diff modem)
+    //   - same base id + empty modem    → KEEP previous modem (status poll
+    //                                     from supervisor only returns base id)
+    QString newModem = m_activeModem;
+    if (modeId.isEmpty()) {
+        newModem = QString();
+    } else if (modeId != m_activeMode) {
+        newModem = modem;
+    } else if (!modem.isEmpty()) {
+        newModem = modem;
+    }
+
+    if (m_activeMode == modeId
+            && m_activeModeName == modeName
+            && m_activeModem == newModem)
         return;
 
     if (!m_activeMode.isEmpty() && m_modeButtons.contains(m_activeMode))
@@ -1854,6 +2007,7 @@ void MainWindow::setActiveMode(const QString &modeId, const QString &modeName)
 
     m_activeMode     = modeId;
     m_activeModeName = modeName.isEmpty() ? modeId : modeName;
+    m_activeModem    = newModem;
 
     if (!modeId.isEmpty() && m_modeButtons.contains(modeId))
         m_modeButtons[modeId]->setProperty("active", true);
@@ -2019,11 +2173,27 @@ void MainWindow::refreshRecentModes()
             QString modem;
             int sep = rid.indexOf(':');
             if (sep >= 0) { baseId = rid.left(sep); modem = rid.mid(sep + 1); }
-            QString rname = m_modeLoader->nameForId(baseId, m_language);
+            // Label rule (strictly from menu JSON, never altered):
+            //   - plain mode               → "<mode label>"          (e.g. "VarAC")
+            //   - multi child              → "<wrapper> - <child>"   (e.g. "Winlink - Mercury")
+            //   - param mode w/ modem      → "<mode label> - <modem label>"
+            //   - multi child + (no modems here, multi children aren't param)
+            QString rname = m_menu ? m_menu->menuLabelFor(baseId, baseId, false) : baseId;
             if (rname.isEmpty()) continue;
-            if (!modem.isEmpty()) rname += " (" + modem + ")";
+            QString parent = m_menu ? m_menu->multiParentLabelFor(baseId, false) : QString();
+            if (!parent.isEmpty()) rname = parent + " - " + rname;
+            if (!modem.isEmpty()) {
+                QString modemLbl = m_menu
+                        ? m_menu->modemLabelFor(baseId, modem, modem)
+                        : modem;
+                rname += " - " + modemLbl;
+            }
             QPushButton *rbtn = new QPushButton(rname);
-            rbtn->setProperty("active", m_activeMode == baseId);
+            // Highlight only the recent entry whose base+modem matches the
+            // active mode. For non-param modes (modem == ""), base id alone.
+            bool active = (m_activeMode == baseId)
+                       && (modem.isEmpty() || modem == m_activeModem);
+            rbtn->setProperty("active", active);
             connect(rbtn, &QPushButton::clicked, this, [this, rid]() {
                 onModeButtonClicked(rid);
             });
@@ -2060,7 +2230,9 @@ void MainWindow::refreshRecentModes()
             QFrame *card = new QFrame();
             card->setFixedSize(60, 60);
             card->setCursor(Qt::PointingHandCursor);
-            const bool isActive = (m_activeMode == baseId);
+            // Match base AND modem (param modes); base only for non-param.
+            const bool isActive = (m_activeMode == baseId)
+                               && (modem.isEmpty() || modem == m_activeModem);
             card->setProperty("active", isActive);
             card->setStyleSheet(
                 "QFrame { background: #1a1a1a; border: 1px solid #2a2a2a; border-radius: 6px; }"
@@ -2119,12 +2291,22 @@ void MainWindow::refreshRecentModes()
             QString modem;
             int sep = rid.indexOf(':');
             if (sep >= 0) { baseId = rid.left(sep); modem = rid.mid(sep + 1); }
-            QString rname = m_modeLoader->nameForId(baseId, m_language);
+            QString rname = m_menu ? m_menu->menuLabelFor(baseId, baseId, true) : baseId;
             if (rname.isEmpty()) continue;
-            if (!modem.isEmpty()) rname += " (" + modem + ")";
+            QString parent = m_menu ? m_menu->multiParentLabelFor(baseId, true) : QString();
+            if (!parent.isEmpty()) rname = parent + " - " + rname;
+            if (!modem.isEmpty()) {
+                QString modemLbl = m_menu
+                        ? m_menu->modemLabelFor(baseId, modem, modem)
+                        : modem;
+                rname += " - " + modemLbl;
+            }
             QPushButton *rbtn = new QPushButton(rname);
             rbtn->setMinimumHeight(80);
             rbtn->setStyleSheet(cardSS);
+            bool active = (m_activeMode == baseId)
+                       && (modem.isEmpty() || modem == m_activeModem);
+            rbtn->setProperty("active", active);
             connect(rbtn, &QPushButton::clicked, this, [this, rid]() {
                 onModeButtonClicked(rid);
             });
@@ -2233,6 +2415,7 @@ void MainWindow::refreshInterfaces()
     QString radioName = "Not configured";
     int rigId = -1;
     bool radioFileExists = false;
+    bool radioHasCat = true;   // default: assume CAT unless JSON says otherwise
     QFile rf(ACTIVE_RADIO);
     if (rf.exists() && rf.open(QIODevice::ReadOnly)) {
         radioFileExists = true;
@@ -2241,6 +2424,7 @@ void MainWindow::refreshInterfaces()
         if (doc.isObject()) {
             radioName = doc.object().value("model").toString(radioName);
             rigId = doc.object().value("rigctrl").toObject().value("id").toInt(-1);
+            radioHasCat = doc.object().value("cat").toBool(true);
         }
     }
     if (m_radioLabel) {
@@ -2262,7 +2446,8 @@ void MainWindow::refreshInterfaces()
     // Strip mode uses shorter text + preserves the compact font we set in buildStripUI
     const QString stripFont = m_stripMode ? " font-size: 10px; font-weight: bold;" : "";
 
-    if (!radioFileExists || rigId == 1) {
+    if (radioFileExists && !radioHasCat) {
+        // Known no-CAT radio (cat:false in its JSON) — gray N/A.
         m_catLabel->setText(m_stripMode ? "CAT —" : "CAT: N/A");
         m_catLabel->setStyleSheet(QString("color: #666666;%1").arg(stripFont));
     } else if (QFile::exists("/dev/et-cat")) {
@@ -2314,5 +2499,146 @@ void MainWindow::refreshInterfaces()
         } else {
             m_tncLabel->setVisible(false);
         }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Toggle items (TOOLS → AUTOMATION). File-backed state — touch the file to
+// turn the toggle OFF (when off_when_file_exists=true), remove the file to
+// turn it ON. Watched via QFileSystemWatcher so the daemon's auto-pause
+// reflects in the UI within a frame.
+// ---------------------------------------------------------------------------
+
+QString MainWindow::expandHome(const QString &path)
+{
+    if (path.startsWith("~/"))
+        return QDir::homePath() + path.mid(1);
+    if (path == "~")
+        return QDir::homePath();
+    return path;
+}
+
+bool MainWindow::isFileToggleOn(const QString &path, bool offWhenExists)
+{
+    const bool exists = QFileInfo::exists(path);
+    return offWhenExists ? !exists : exists;
+}
+
+QPushButton *MainWindow::makeToggleBtn(const MenuLoader::Item &it,
+                                       QWidget *parent, bool touchMode)
+{
+    const QString label = MenuLoader::labelFor(it.label, it.labelTouch, touchMode);
+    const QString resolvedPath = expandHome(it.stateFile);
+
+    m_toggleStateFiles[it.id] = resolvedPath;
+    m_toggleOffWhenExists[it.id] = it.offWhenFileExists;
+
+    QPushButton *btn = new QPushButton(label, parent);
+    btn->setProperty("toggleId", it.id);
+    btn->setCheckable(false);   // visual-only; we manage state via file
+    btn->setCursor(Qt::PointingHandCursor);
+    connect(btn, &QPushButton::clicked, this, [this, id = it.id]() {
+        onToggleClicked(id);
+    });
+
+    // Track this button so style updates can find it on watcher events.
+    m_toggleButtons[it.id].append(btn);
+
+    // Watch the directory the state file lives in — file may not exist yet
+    // (toggle ON = absent), and QFileSystemWatcher won't observe a missing
+    // path directly. Watching the parent dir catches create/delete cleanly.
+    if (!m_toggleWatcher) {
+        m_toggleWatcher = new QFileSystemWatcher(this);
+        connect(m_toggleWatcher, &QFileSystemWatcher::directoryChanged,
+                this, &MainWindow::onToggleStateChanged);
+        connect(m_toggleWatcher, &QFileSystemWatcher::fileChanged,
+                this, &MainWindow::onToggleStateChanged);
+    }
+    const QString parentDir = QFileInfo(resolvedPath).absolutePath();
+    QDir().mkpath(parentDir);
+    if (!m_toggleWatcher->directories().contains(parentDir))
+        m_toggleWatcher->addPath(parentDir);
+    if (QFileInfo::exists(resolvedPath)
+        && !m_toggleWatcher->files().contains(resolvedPath))
+        m_toggleWatcher->addPath(resolvedPath);
+
+    updateToggleVisual(it.id);
+    return btn;
+}
+
+void MainWindow::updateToggleVisual(const QString &id)
+{
+    const QString path = m_toggleStateFiles.value(id);
+    const bool offWhenExists = m_toggleOffWhenExists.value(id, true);
+    const bool on = isFileToggleOn(path, offWhenExists);
+
+    // Orange (#FFA500) when ON, muted gray when OFF — matches LiaisonOS
+    // accent palette. Rebuild the stylesheet on each call so subsequent
+    // state changes pick up immediately.
+    static const char *onSS =
+        "QPushButton { background: #FFA500; color: #1a1a1a; "
+        "  border: 1px solid #FFA500; border-radius: 4px; font-weight: bold; "
+        "  padding: 8px; }"
+        "QPushButton:hover { background: #ffb733; }";
+    static const char *offSS =
+        "QPushButton { background: #2a2a2a; color: #888; "
+        "  border: 1px solid #444; border-radius: 4px; padding: 8px; }"
+        "QPushButton:hover { background: #333; color: #aaa; }";
+
+    const QList<QPushButton*> &btns = m_toggleButtons.value(id);
+    for (QPushButton *b : btns) {
+        if (!b) continue;
+        b->setStyleSheet(on ? onSS : offSS);
+        // Append " ON" / " OFF" to the label so state is unambiguous in
+        // both rendering modes (Desktop sidebar AND Touch card).
+        QString base = b->text();
+        // Strip prior suffix if present
+        const QStringList suffixes = {" ON", " OFF"};
+        for (const QString &s : suffixes) {
+            if (base.endsWith(s)) { base.chop(s.size()); break; }
+        }
+        b->setText(base + (on ? " ON" : " OFF"));
+        b->setToolTip(on
+            ? "Automation ON — daemon is firing scheduled missions."
+            : QString("Automation OFF — paused.\nFlag: %1").arg(path));
+    }
+}
+
+void MainWindow::onToggleClicked(const QString &id)
+{
+    const QString path = m_toggleStateFiles.value(id);
+    if (path.isEmpty()) return;
+    const bool offWhenExists = m_toggleOffWhenExists.value(id, true);
+    const bool on = isFileToggleOn(path, offWhenExists);
+    // Flip: if currently ON and offWhenExists → create file (turn OFF).
+    // If currently OFF and offWhenExists → remove file (turn ON).
+    const bool needCreate = offWhenExists ? on : !on;
+    if (needCreate) {
+        QDir().mkpath(QFileInfo(path).absolutePath());
+        QFile f(path);
+        if (f.open(QFile::WriteOnly | QFile::Truncate)) {
+            f.write(QString("paused-by-operator %1\n")
+                        .arg(QDateTime::currentDateTime().toString(Qt::ISODate))
+                        .toUtf8());
+            f.close();
+        }
+        if (m_toggleWatcher && !m_toggleWatcher->files().contains(path))
+            m_toggleWatcher->addPath(path);
+    } else {
+        QFile::remove(path);
+    }
+    // Visual updates via watcher signal; force one update in case the
+    // watcher event lands after the next user click.
+    updateToggleVisual(id);
+}
+
+void MainWindow::onToggleStateChanged(const QString &changedPath)
+{
+    Q_UNUSED(changedPath)
+    // We don't know exactly which toggle was affected (dir watch covers
+    // all toggles sharing that dir). Refresh every registered toggle.
+    for (auto it = m_toggleButtons.constBegin();
+         it != m_toggleButtons.constEnd(); ++it) {
+        updateToggleVisual(it.key());
     }
 }

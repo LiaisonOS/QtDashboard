@@ -21,7 +21,7 @@ class MenuLoader : public QObject
     Q_OBJECT
 
 public:
-    enum class ItemType { Mode, Multi, Param };
+    enum class ItemType { Mode, Multi, Param, Toggle };
 
     struct ModeRef {
         QString id;
@@ -41,7 +41,7 @@ public:
 
     struct Item {
         ItemType         type;
-        QString          id;          // Mode + Param
+        QString          id;          // Mode + Param + Toggle
         QString          label;
         QString          labelTouch;
         QString          labelAbbr;
@@ -49,6 +49,10 @@ public:
         QList<ModeRef>   modes;       // Multi
         QString          paramKey;    // Param
         QList<ParamOption> options;   // Param
+        // Toggle: state is derived from a sentinel file on disk. Touch the
+        // file to toggle OFF (when offWhenFileExists=true) or ON (otherwise).
+        QString          stateFile;        // Toggle
+        bool             offWhenFileExists = true;  // Toggle
     };
 
     struct Group {
@@ -76,6 +80,27 @@ public:
     //          else the supplied fallback.
     // Searches both top-level "mode"/"param" items and nested "multi" entries.
     QString stripLabelFor(const QString &modeId, const QString &fallback) const;
+
+    // Look up a mode's regular menu label (the one shown on the group button).
+    // Used by Recent buttons so they show the SAME short label as the group
+    // (e.g. "QtTermTCP") rather than the verbose modes.d name (e.g.
+    // "BBS Client (QtTermTCP)"). Returns labelTouch if touchMode and set,
+    // else label, else fallback.
+    QString menuLabelFor(const QString &modeId, const QString &fallback,
+                         bool touchMode) const;
+
+    // Look up the LABEL of a specific modem/param option (e.g. "VARA HF")
+    // given the param-mode id and the modem value (e.g. "vara-hf"). Returns
+    // fallback if the menu doesn't define a matching option. Used by Recent
+    // buttons so they show the operator-defined label, not the raw key.
+    QString modemLabelFor(const QString &modeId, const QString &modemValue,
+                          const QString &fallback) const;
+
+    // If `modeId` is a child of a Multi item, return the Multi's wrapper
+    // label (e.g. "Winlink" for the winlink-mercury / winlink-vara-hf set).
+    // Returns empty string if the mode isn't a Multi child. Used to build
+    // full Recent labels like "Winlink - Mercury".
+    QString multiParentLabelFor(const QString &modeId, bool touchMode) const;
 
     // Look up a mode's strip icon (single unicode glyph / emoji). Returns
     // empty string if no icon is defined.
