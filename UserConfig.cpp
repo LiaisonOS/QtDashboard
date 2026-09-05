@@ -123,7 +123,24 @@ void UserConfig::setTracking(bool enabled)
 
 void UserConfig::addToRecent(const QString &modeId)
 {
-    m_recentModes.removeAll(modeId);
+    // Dedup by BASE ID (part before the colon), not by full composite.
+    // Otherwise every modem choice for the same mode piles up in Recents:
+    //   "bbs-server:vara-hf" and "bbs-server:vara-fm" both survive
+    //   simple removeAll(modeId) because they're different strings.
+    // Same trap catches legacy "bbs-server" (no modem) entries created
+    // by an older version — the new composite doesn't match them so they
+    // linger forever. Extract the base id and clear ALL entries that
+    // share it before prepending the fresh one.
+    const int sep = modeId.indexOf(':');
+    const QString baseId = (sep >= 0) ? modeId.left(sep) : modeId;
+
+    for (int i = m_recentModes.size() - 1; i >= 0; --i) {
+        const QString &existing = m_recentModes[i];
+        const int esep = existing.indexOf(':');
+        const QString existingBase = (esep >= 0) ? existing.left(esep) : existing;
+        if (existingBase == baseId)
+            m_recentModes.removeAt(i);
+    }
     m_recentModes.prepend(modeId);
     while (m_recentModes.size() > 6)
         m_recentModes.removeLast();
