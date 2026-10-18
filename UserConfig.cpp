@@ -74,15 +74,26 @@ void UserConfig::load()
 
 void UserConfig::writeJson()
 {
+    const QByteArray json = QJsonDocument(m_json).toJson(QJsonDocument::Indented);
+
+    // Primary: current liaisonos path (the one we read & watch)
     m_watcher.removePath(m_path);
     QFile fw(m_path);
-    if (!fw.open(QIODevice::WriteOnly | QIODevice::Truncate)) {
-        m_watcher.addPath(m_path);
-        return;
+    if (fw.open(QIODevice::WriteOnly | QIODevice::Truncate)) {
+        fw.write(json);
+        fw.close();
     }
-    fw.write(QJsonDocument(m_json).toJson(QJsonDocument::Indented));
-    fw.close();
     m_watcher.addPath(m_path);
+
+    // Mirror to the legacy emcomm-tools path so not-yet-migrated tools still see
+    // the config. Remove this once every tool reads the liaisonos path.
+    const QString legacy = QDir::homePath() + "/.config/emcomm-tools/user.json";
+    QDir().mkpath(QFileInfo(legacy).absolutePath());
+    QFile fl(legacy);
+    if (fl.open(QIODevice::WriteOnly | QIODevice::Truncate)) {
+        fl.write(json);
+        fl.close();
+    }
 }
 
 void UserConfig::save()
