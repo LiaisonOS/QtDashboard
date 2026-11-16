@@ -228,6 +228,8 @@ void MainWindow::clearUI()
     m_radioNotesLabel = nullptr;
     m_editCallsign    = nullptr;
     m_editGrid        = nullptr;
+    m_editLat         = nullptr;
+    m_editLon         = nullptr;
     m_editName        = nullptr;
     m_editPassword    = nullptr;
     m_editLang        = nullptr;
@@ -359,6 +361,8 @@ void MainWindow::buildDesktopUI()
 
         addField("Callsign",         m_editCallsign, "e.g. VA2OPS");
         addField("Grid Square",      m_editGrid,     "e.g. FN35fl");
+        addField("Latitude",         m_editLat,      "e.g. 45.5017 (optional, overrides grid)");
+        addField("Longitude",        m_editLon,      "e.g. -73.5673 (optional)");
         addField("Name",             m_editName,     "Your name (optional)");
         addField("Winlink Password", m_editPassword, "••••••••", true);
 
@@ -569,6 +573,24 @@ void MainWindow::buildDesktopUI()
         cl->addWidget(btn);
     };
 
+    // Auto-route button: ONE button that launches the mode matching the active
+    // radio (USB KISS / Bluetooth KISS / Direwolf) — no sub-menu, no choice.
+    auto addAutoBtn = [&](QVBoxLayout *cl, const QString &label,
+                          const QMap<QString,QString> &map) {
+        QPushButton *btn = new QPushButton(label, sc);
+        // Register under each mapped id so the active-state refresh highlights
+        // this button whichever variant is running.
+        for (const QString &mid : map.values()) {
+            if (m_activeMode == mid) btn->setProperty("active", true);
+            m_modeButtons[mid] = btn;
+        }
+        connect(btn, &QPushButton::clicked, this, [this, map]() {
+            const QString modeId = resolveAutoMode(map);
+            if (!modeId.isEmpty()) onModeButtonClicked(modeId);
+        });
+        cl->addWidget(btn);
+    };
+
     // Multi-mode expander: each modem button launches a different modeId
     using ModeList = QList<QPair<QString,QString>>;
     auto addMultiMode = [&](QVBoxLayout *cl, const QString &groupLabel, const ModeList &modes) {
@@ -712,6 +734,9 @@ void MainWindow::buildDesktopUI()
                 cl->addWidget(tb);
                 break;
             }
+            case MenuLoader::ItemType::Auto:
+                addAutoBtn(cl, label, it.autoMap);
+                break;
             }
         }
     }
@@ -1121,6 +1146,8 @@ void MainWindow::buildTouchUI()
 
         addTouchField("Callsign",         m_editCallsign, "e.g. VA2OPS");
         addTouchField("Grid Square",      m_editGrid,     "e.g. FN35fl");
+        addTouchField("Latitude",         m_editLat,      "e.g. 45.5017 (optional)");
+        addTouchField("Longitude",        m_editLon,      "e.g. -73.5673 (optional)");
         addTouchField("Name",             m_editName,     "Your name (optional)");
         addTouchField("Winlink Password", m_editPassword, "••••••••", true);
 
@@ -1334,6 +1361,19 @@ void MainWindow::buildTouchUI()
                 row->addWidget(tb, 1);
                 break;
             }
+            case MenuLoader::ItemType::Auto: {
+                QPushButton *btn = new QPushButton(itemLabel, cw);
+                btn->setMinimumHeight(80);
+                btn->setStyleSheet(cardSS);
+                QMap<QString,QString> amap = it.autoMap;
+                for (const QString &mid : amap.values()) m_modeButtons[mid] = btn;
+                connect(btn, &QPushButton::clicked, this, [this, amap]() {
+                    const QString modeId = resolveAutoMode(amap);
+                    if (!modeId.isEmpty()) onModeButtonClicked(modeId);
+                });
+                row->addWidget(btn, 1);
+                break;
+            }
             }
             ++colsInRow;
         }
@@ -1541,6 +1581,10 @@ static QList<QJsonObject> loadRadios()
         if (!f.open(QIODevice::ReadOnly)) continue;
         QJsonObject obj = QJsonDocument::fromJson(f.readAll()).object();
         f.close();
+        // Record the real file stem (e.g. "kenwood-thd75.bt") — BT profiles are
+        // named "<id>.bt.json", not "<id>.json", so the JSON "id" alone can't
+        // map back to the file. Callers link/select by this stem.
+        obj["__file"] = QFileInfo(fn).completeBaseName();
         radios.append(obj);
     }
     return radios;
@@ -1565,7 +1609,9 @@ void MainWindow::toggleIfaceEditor()
         QString active = activeRadioId();
         int activeIdx = 0;
         for (const QJsonObject &r : loadRadios()) {
-            QString id       = r.value("id").toString(r.value("file").toString());
+            // Use the file stem (handles "<id>.bt.json") so Apply links the
+            // correct file and the active radio pre-selects. Falls back to id.
+            QString id       = r.value("__file").toString(r.value("id").toString());
             QString vendor   = r.value("vendor").toString(r.value("manufacturer").toString());
             QString model    = r.value("model").toString();
             QString label    = vendor.isEmpty() ? model : vendor + " " + model;
@@ -1594,19 +1640,37 @@ void MainWindow::applyRadio()
     // Set active-radio symlink
     QString linkPath = "/opt/emcomm-tools/conf/radios.d/active-radio.json";
     QFile::remove(linkPath);
+    bool kissUsb = false;
     if (!radioId.isEmpty()) {
         QString target = "/opt/emcomm-tools/conf/radios.d/" + radioId + ".json";
         QFile::link(target, linkPath);
+
+        // Is this a USB serial KISS TNC profile (e.g. TH-D72)? It has a
+        // "kiss_usb" block and no CAT. Then we capture its adapter instead of
+        // starting rigctld.
+        QFile pf(target);
+        if (pf.open(QIODevice::ReadOnly)) {
+            QJsonObject o = QJsonDocument::fromJson(pf.readAll()).object();
+            kissUsb = o.contains("kiss_usb");
+            pf.close();
+        }
     }
 
-    // Restart rigctld so it re-reads active-radio.json and starts in the
-    // right mode for the selected radio (Dummy for cat:false radios, full
-    // CAT otherwise). Without this, the user has to unplug/replug the USB
-    // to get rigctld to pick up the new config — easy to forget and the
-    // next mode start fails with a cryptic "Rig Control Error" from the
-    // app (rigctld is still pinned to the previous radio's serial port).
-    // sudoers already permits this command without password.
-    if (!radioId.isEmpty()) {
+    if (kissUsb) {
+        // USB KISS TNC: record THIS adapter's CP210x serial into a per-station
+        // udev rule -> /dev/et-kiss (and NO rigctld — it's a TNC, not a CAT
+        // radio). et-kiss-detect also stops any rigctld the DigiRig rule may
+        // have started on the same CP210x. sudoers permits it passwordless.
+        QProcess::startDetached("sudo",
+            {"/opt/emcomm-tools/sbin/et-kiss-detect"});
+    } else if (!radioId.isEmpty()) {
+        // Restart rigctld so it re-reads active-radio.json and starts in the
+        // right mode for the selected radio (Dummy for cat:false radios, full
+        // CAT otherwise). Without this, the user has to unplug/replug the USB
+        // to get rigctld to pick up the new config — easy to forget and the
+        // next mode start fails with a cryptic "Rig Control Error" from the
+        // app (rigctld is still pinned to the previous radio's serial port).
+        // sudoers already permits this command without password.
         QProcess::startDetached("sudo",
             {"systemctl", "restart", "rigctld"});
     }
@@ -1724,6 +1788,24 @@ void MainWindow::onTouchModeChanged(bool enabled)
 void MainWindow::onToggleTouchMode()
 {
     m_userConfig->setTouchMode(!m_userConfig->touchMode());
+}
+
+QString MainWindow::resolveAutoMode(const QMap<QString, QString> &map) const
+{
+    // Pick the transport-specific mode from the active radio profile: a
+    // "kiss_usb" block -> USB KISS, a "bluetooth" block -> KISS BT, otherwise
+    // the "default" (soundcard/Direwolf). So one button follows the rig the
+    // operator selected — no second choice needed.
+    QString key = "default";
+    QFile rf("/opt/emcomm-tools/conf/radios.d/active-radio.json");
+    if (rf.open(QIODevice::ReadOnly)) {
+        QJsonObject o = QJsonDocument::fromJson(rf.readAll()).object();
+        rf.close();
+        if (o.contains("kiss_usb"))      key = "kiss_usb";
+        else if (o.contains("bluetooth")) key = "bluetooth";
+    }
+    if (map.contains(key))       return map.value(key);
+    return map.value("default");
 }
 
 void MainWindow::onModeButtonClicked(const QString &modeId)
@@ -2334,6 +2416,9 @@ void MainWindow::toggleOperatorEditor()
             QJsonObject obj = QJsonDocument::fromJson(f.readAll()).object();
             f.close();
             m_editName->setText(obj.value("name").toString());
+            // Precise coordinates (optional). Blank if not set.
+            m_editLat->setText(obj.contains("lat") ? QString::number(obj.value("lat").toDouble(), 'f', 5) : QString());
+            m_editLon->setText(obj.contains("lon") ? QString::number(obj.value("lon").toDouble(), 'f', 5) : QString());
             // Don't pre-fill password — security
         }
         int langIdx = m_editLang->findData(m_userConfig->language());
@@ -2371,6 +2456,23 @@ void MainWindow::saveOperator()
     obj["language"] = lang;
     if (!password.isEmpty())
         obj["winlinkPasswd"] = password;
+
+    // Precise coordinates (optional). Blank fields clear them so apps fall back
+    // to the grid; valid numbers in range are stored for apps that want a
+    // precise fixed-station position (e.g. QtChattervox beacons/map).
+    const QString latTxt = m_editLat->text().trimmed();
+    const QString lonTxt = m_editLon->text().trimmed();
+    bool latOk = false, lonOk = false;
+    const double lat = latTxt.toDouble(&latOk);
+    const double lon = lonTxt.toDouble(&lonOk);
+    if (latTxt.isEmpty() && lonTxt.isEmpty()) {
+        obj.remove("lat");
+        obj.remove("lon");
+    } else if (latOk && lonOk && lat >= -90.0 && lat <= 90.0 && lon >= -180.0 && lon <= 180.0) {
+        obj["lat"] = lat;
+        obj["lon"] = lon;
+    }
+    // (invalid partial input is ignored — keeps whatever was there)
 
     if (f.open(QIODevice::WriteOnly | QIODevice::Truncate)) {
         f.write(QJsonDocument(obj).toJson(QJsonDocument::Indented));
@@ -2416,6 +2518,9 @@ void MainWindow::refreshInterfaces()
     int rigId = -1;
     bool radioFileExists = false;
     bool radioHasCat = true;   // default: assume CAT unless JSON says otherwise
+    bool radioIsKissTnc = false;   // KISS TNC profile (USB serial or Bluetooth)
+    QString kissDev;               // device that signals the TNC link is up
+    bool kissIsUsb = false;        // USB: red when unplugged; BT: binds on use
     QFile rf(ACTIVE_RADIO);
     if (rf.exists() && rf.open(QIODevice::ReadOnly)) {
         radioFileExists = true;
@@ -2425,6 +2530,11 @@ void MainWindow::refreshInterfaces()
             radioName = doc.object().value("model").toString(radioName);
             rigId = doc.object().value("rigctrl").toObject().value("id").toInt(-1);
             radioHasCat = doc.object().value("cat").toBool(true);
+            if (doc.object().contains("kiss_usb")) {
+                radioIsKissTnc = true; kissDev = "/dev/et-kiss"; kissIsUsb = true;
+            } else if (doc.object().contains("bluetooth")) {
+                radioIsKissTnc = true; kissDev = "/dev/rfcomm0";
+            }
         }
     }
     if (m_radioLabel) {
@@ -2446,7 +2556,25 @@ void MainWindow::refreshInterfaces()
     // Strip mode uses shorter text + preserves the compact font we set in buildStripUI
     const QString stripFont = m_stripMode ? " font-size: 10px; font-weight: bold;" : "";
 
-    if (radioFileExists && !radioHasCat) {
+    if (radioIsKissTnc) {
+        // KISS TNC (USB TH-D72 via /dev/et-kiss, or a Bluetooth HT via
+        // /dev/rfcomm0): no CAT and no PC audio — show ONE indicator in the CAT
+        // slot instead of a misleading "CAT: N/A" + red "Audio: ✗".
+        bool up = QFile::exists(kissDev);
+        if (up) {
+            m_catLabel->setText(m_stripMode ? "KISS ✓" : "KISS TNC: ✓");
+            m_catLabel->setStyleSheet(QString("color: #4ade80;%1").arg(stripFont));
+        } else if (kissIsUsb) {
+            // USB: /dev/et-kiss gone means the HT is unplugged — a real fault.
+            m_catLabel->setText(m_stripMode ? "KISS ✗" : "KISS TNC: ✗");
+            m_catLabel->setStyleSheet(QString("color: #cc0000;%1").arg(stripFont));
+        } else {
+            // Bluetooth: /dev/rfcomm0 is bound only when a KISS mode starts, so
+            // "not bound yet" is normal, not a fault — show neutral gray.
+            m_catLabel->setText(m_stripMode ? "KISS —" : "KISS TNC: —");
+            m_catLabel->setStyleSheet(QString("color: #666666;%1").arg(stripFont));
+        }
+    } else if (radioFileExists && !radioHasCat) {
         // Known no-CAT radio (cat:false in its JSON) — gray N/A.
         m_catLabel->setText(m_stripMode ? "CAT —" : "CAT: N/A");
         m_catLabel->setStyleSheet(QString("color: #666666;%1").arg(stripFont));
@@ -2458,7 +2586,11 @@ void MainWindow::refreshInterfaces()
         m_catLabel->setStyleSheet(QString("color: #cc0000;%1").arg(stripFont));
     }
 
-    if (QFile::exists("/dev/et-audio")) {
+    if (radioIsKissTnc) {
+        // KISS TNC status is shown in the CAT slot above; hide the audio tile.
+        m_audioLabel->setText("");
+        m_audioLabel->setStyleSheet(stripFont);
+    } else if (QFile::exists("/dev/et-audio")) {
         m_audioLabel->setText(m_stripMode ? "AUD ✓" : "Audio: ✓");
         m_audioLabel->setStyleSheet(QString("color: #4ade80;%1").arg(stripFont));
     } else {

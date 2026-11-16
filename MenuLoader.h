@@ -9,6 +9,7 @@
 
 #include <QObject>
 #include <QList>
+#include <QMap>
 #include <QString>
 #include <QJsonObject>
 #include <QFileSystemWatcher>
@@ -21,7 +22,7 @@ class MenuLoader : public QObject
     Q_OBJECT
 
 public:
-    enum class ItemType { Mode, Multi, Param, Toggle };
+    enum class ItemType { Mode, Multi, Param, Toggle, Auto };
 
     struct ModeRef {
         QString id;
@@ -53,6 +54,10 @@ public:
         // file to toggle OFF (when offWhenFileExists=true) or ON (otherwise).
         QString          stateFile;        // Toggle
         bool             offWhenFileExists = true;  // Toggle
+        // Auto: interface-key -> mode id (e.g. "kiss_usb"->"aprs-client-usb",
+        // "bluetooth"->"aprs-client-bt", "default"->"aprs-client"). Resolved at
+        // click from the active radio profile.
+        QMap<QString, QString> autoMap;
     };
 
     struct Group {

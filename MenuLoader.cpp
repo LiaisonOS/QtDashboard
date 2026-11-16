@@ -337,6 +337,7 @@ MenuLoader::Item MenuLoader::parseItem(const QJsonObject &o)
     else if (t == "multi")  it.type = ItemType::Multi;
     else if (t == "param")  it.type = ItemType::Param;
     else if (t == "toggle") it.type = ItemType::Toggle;
+    else if (t == "auto")   it.type = ItemType::Auto;
     else {
         qWarning() << "MenuLoader: unknown item type" << t;
         it.type = ItemType::Mode;
@@ -360,6 +361,10 @@ MenuLoader::Item MenuLoader::parseItem(const QJsonObject &o)
         if (!v.isObject()) continue;
         it.options.append(parseParamOption(v.toObject()));
     }
+    // Auto: interface-key -> mode id map (resolved at click by MainWindow).
+    const QJsonObject am = o.value("map").toObject();
+    for (const QString &k : am.keys())
+        it.autoMap.insert(k, am.value(k).toString());
     return it;
 }
 

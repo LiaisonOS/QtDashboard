@@ -61,6 +61,9 @@ private slots:
     void onMenuChanged();
 
 private:
+    // Resolve an "auto" menu item to a mode id from the active radio profile
+    // (kiss_usb / bluetooth / default). Returns empty if nothing maps.
+    QString resolveAutoMode(const QMap<QString, QString> &map) const;
     void buildDesktopUI();
     void buildTouchUI();
     void buildStripUI();
@@ -114,6 +117,8 @@ private:
     QLabel       *m_radioNotesLabel = nullptr;
     QLineEdit    *m_editCallsign    = nullptr;
     QLineEdit    *m_editGrid        = nullptr;
+    QLineEdit    *m_editLat         = nullptr;
+    QLineEdit    *m_editLon         = nullptr;
     QLineEdit    *m_editName        = nullptr;
     QLineEdit    *m_editPassword    = nullptr;
     QComboBox    *m_editLang        = nullptr;
